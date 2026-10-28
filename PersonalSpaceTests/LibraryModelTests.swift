@@ -71,4 +71,47 @@ final class LibraryModelTests: XCTestCase {
         XCTAssertEqual(model.reminderMessage, "行动已保存，原提醒保持不变。")
     }
 
+    func testReminderRecoveryEligibilityUsesStateConfirmedFutureDateAndActualPendingIDs() throws {
+        let model = LibraryModel(database: try LibraryDatabase(path: ":memory:"))
+        let now = Date(timeIntervalSince1970: 1_900_000_000)
+        var action = ActionRecord(id: "recover", matterID: "matter", title: "检查保修", dueDate: nil,
+            remindAt: now.addingTimeInterval(60), state: "active", dateConfirmed: true,
+            createdAt: now, updatedAt: now, matterTitle: "合成事务")
+        XCTAssertTrue(model.canRescheduleReminder(action, now: now))
+        model.pendingActionIDs = [action.id]
+        XCTAssertFalse(model.canRescheduleReminder(action, now: now))
+        model.pendingActionIDs = []
+        for state in ["done", "cancelled", "needs_date"] {
+            action.state = state
+            XCTAssertFalse(model.canRescheduleReminder(action, now: now))
+        }
+        action.state = "active"
+        action.dateConfirmed = false
+        XCTAssertFalse(model.canRescheduleReminder(action, now: now))
+        action.dateConfirmed = true
+        action.remindAt = now
+        XCTAssertFalse(model.canRescheduleReminder(action, now: now))
+        action.remindAt = nil
+        XCTAssertFalse(model.canRescheduleReminder(action, now: now))
+    }
+
+    func testRecoveryRejectsNonActionableRowsAndNeverChangesActionData() async throws {
+        let database = try LibraryDatabase(path: ":memory:")
+        try await database.saveMatter(MatterDraft(id: "recovery", title: "恢复边界", actions: [
+            ActionDraft(id: "completed", title: "已完成", remindAt: Date().addingTimeInterval(3600), state: "done", dateConfirmed: true),
+            ActionDraft(id: "cancelled", title: "已取消", remindAt: Date().addingTimeInterval(3600), state: "cancelled", dateConfirmed: true),
+            ActionDraft(id: "unknown", title: "待补日期"),
+            ActionDraft(id: "past", title: "过去时间", remindAt: Date(timeIntervalSince1970: 1), state: "active", dateConfirmed: true)
+        ]))
+        let before = try await database.actions(matterID: "recovery")
+        let model = LibraryModel(database: database)
+        for id in ["completed", "cancelled", "unknown", "past", "missing"] {
+            let result = await model.rescheduleReminder(actionID: id)
+            XCTAssertFalse(result.scheduled)
+            XCTAssertTrue(model.reschedulingActionIDs.isEmpty)
+        }
+        let after = try await database.actions(matterID: "recovery")
+        XCTAssertEqual(before, after)
+    }
+
 }

@@ -10,8 +10,10 @@ struct ActionEditorView: View {
     @State private var message: String?
     private let original: ActionDraft
     let saveAction: @MainActor (ActionDraft) async -> Bool
+    private let savesToMatterDraft: Bool
 
-    init(draft: ActionDraft, saveAction: @escaping @MainActor (ActionDraft) async -> Bool) {
+    init(draft: ActionDraft, savesToMatterDraft: Bool = false, saveAction: @escaping @MainActor (ActionDraft) async -> Bool) {
+        self.savesToMatterDraft = savesToMatterDraft
         self.original = draft
         self.saveAction = saveAction
         _draft = State(initialValue: draft)
@@ -58,11 +60,15 @@ struct ActionEditorView: View {
                     .font(.caption).foregroundStyle(.secondary)
             }.formStyle(.grouped)
             Divider()
+            VStack(alignment: .leading, spacing: 10) {
+                if savesToMatterDraft {
+                    Text("修改将在保存事务后生效").font(.callout).foregroundStyle(.secondary)
+                }
             HStack {
                 if let message { Text(message).font(.caption).foregroundStyle(.orange) }
                 Spacer()
                 Button("取消") { dismiss() }.keyboardShortcut(.cancelAction).disabled(saving)
-                Button(saving ? "正在保存…" : "保存行动") {
+                Button(saving ? "正在保存…" : savesToMatterDraft ? "完成行动编辑" : "保存行动") {
                     var edited = draft
                     edited.dueDate = hasDueDate ? dueDate : nil
                     edited.remindAt = draft.dateConfirmed ? reminderDate : nil
@@ -75,6 +81,7 @@ struct ActionEditorView: View {
                     }
                 }.keyboardShortcut(.defaultAction)
                     .disabled(saving || invalidReminder || draft.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            }
             }.padding(20)
         }.frame(width: 550, height: 480)
             .interactiveDismissDisabled(saving)
@@ -83,6 +90,7 @@ struct ActionEditorView: View {
 
 struct ActionTimingView: View {
     @EnvironmentObject private var model: LibraryModel
+    @State private var recoveryResult: ReminderResult?
     let action: ActionRecord
 
     var body: some View {
@@ -100,6 +108,17 @@ struct ActionTimingView: View {
             } else {
                 Label(model.deliveredActionIDs.contains(action.id) ? "已送达通知中心" : "当前没有待发送通知",
                       systemImage: model.deliveredActionIDs.contains(action.id) ? "bell" : "bell.slash")
+            }
+            if model.canRescheduleReminder(action) {
+                Button(model.reschedulingActionIDs.contains(action.id) ? "正在安排…" : "重新安排提醒", systemImage: "bell.badge") {
+                    recoveryResult = nil
+                    Task { recoveryResult = await model.rescheduleReminder(actionID: action.id) }
+                }.controlSize(.small)
+                    .disabled(model.reschedulingActionIDs.contains(action.id))
+            }
+            if let recoveryResult {
+                Text(recoveryResult.message)
+                    .foregroundStyle(recoveryResult.scheduled ? Color.secondary : Color.orange)
             }
         }.font(.caption).foregroundStyle(.secondary)
     }

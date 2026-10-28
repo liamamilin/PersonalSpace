@@ -11,6 +11,7 @@ final class LibraryModel: ObservableObject {
     @Published var matterFacts: [FactRecord] = []
     @Published var matterFiles: [LibraryFile] = []
     @Published var pendingActionIDs: Set<String> = []
+    @Published private(set) var reschedulingActionIDs: Set<String> = []
     @Published var pendingReminderDates: [String: Date] = [:]
     @Published var deliveredActionIDs: Set<String> = []
     @Published var reminderMessage: String?
@@ -752,6 +753,60 @@ final class LibraryModel: ObservableObject {
             await reload()
             await refreshReminderStatus(updateMessage: false)
         } catch { errorMessage = "更新待办失败，请重试。" }
+    }
+
+    func canRescheduleReminder(_ action: ActionRecord, now: Date = Date()) -> Bool {
+        action.state == "active" && action.dateConfirmed
+            && action.remindAt.map { $0 > now } == true
+            && !pendingActionIDs.contains(action.id)
+    }
+
+    func rescheduleReminder(actionID: String) async -> ReminderResult {
+        guard let database else {
+            return ReminderResult(scheduled: false, message: "资料库不可用，无法重新安排提醒。")
+        }
+        guard reschedulingActionIDs.insert(actionID).inserted else {
+            return ReminderResult(scheduled: false, message: "正在核对这条提醒，请稍候。")
+        }
+        defer { reschedulingActionIDs.remove(actionID) }
+        do {
+            await refreshReminderStatus(updateMessage: false)
+            guard let action = try await database.action(id: actionID), action.state == "active",
+                  action.dateConfirmed, let time = action.remindAt, time > Date() else {
+                let result = ReminderResult(scheduled: false, message: "仅可重新安排待处理、已确认未来时间的行动提醒。请先检查行动的状态和时间。")
+                reminderMessage = result.message
+                return result
+            }
+            if pendingActionIDs.contains(actionID) {
+                let result = ReminderResult(scheduled: true, message: "系统已有这条待发送提醒，无需重复安排。")
+                reminderMessage = result.message
+                return result
+            }
+            let result = await reminders.apply(actionID: action.id, title: action.title,
+                remindAt: action.remindAt, dateConfirmed: action.dateConfirmed, state: action.state)
+            // A permission prompt can suspend this operation while the action is edited elsewhere.
+            if let current = try await database.action(id: actionID),
+               current.state != action.state || current.dateConfirmed != action.dateConfirmed
+                    || current.remindAt != action.remindAt {
+                await updateReminder(current, previous: action)
+                await refreshReminderStatus(updateMessage: false)
+                let updated = ReminderResult(scheduled: pendingActionIDs.contains(actionID),
+                    message: "行动已更新，已按最新状态核对系统提醒。")
+                reminderMessage = updated.message
+                return updated
+            }
+            await refreshReminderStatus(updateMessage: false)
+            let restored = pendingActionIDs.contains(actionID)
+            let message = restored ? "系统提醒已重新安排，请查看实际待发送时间。"
+                : result.scheduled ? "系统尚未返回这条待发送提醒，请稍后重试。" : result.message
+            reminderMessage = message
+            return ReminderResult(scheduled: restored, message: message)
+        } catch {
+            await refreshReminderStatus(updateMessage: false)
+            let result = ReminderResult(scheduled: false, message: "无法读取行动或重新安排提醒，请稍后重试。")
+            reminderMessage = result.message
+            return result
+        }
     }
 
     func refreshReminderStatus(updateMessage: Bool = true) async {

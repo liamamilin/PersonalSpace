@@ -575,7 +575,7 @@ struct MatterEditorView: View {
             }
         }
         .sheet(item: $editingAction) { action in
-            ActionEditorView(draft: action) { edited in
+            ActionEditorView(draft: action, savesToMatterDraft: true) { edited in
                 if let index = draft.actions.firstIndex(where: { $0.id == edited.id }) {
                     draft.actions[index] = edited
                 } else { draft.actions.append(edited) }
