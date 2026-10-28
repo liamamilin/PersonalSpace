@@ -109,11 +109,15 @@ struct LibraryFile: Decodable, FetchableRecord, Identifiable, Sendable, Equatabl
     var managedSHA256: String? = nil
     var managedAt: Date? = nil
     var textIndexedAt: Date? = nil
+    var itemKind = "file"
+    var photoLocalIdentifier: String? = nil
+    var sensitivity = "normal"
 
     var modifiedSortDate: Date { modifiedAt ?? .distantPast }
-    var kind: String { UTType(typeIdentifier)?.localizedDescription ?? "文件" }
-    var fullPath: String { URL(fileURLWithPath: sourcePath).appendingPathComponent(relativePath).path }
-    var size: String { ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file) }
+    var isPhoto: Bool { itemKind == "photo" }
+    var kind: String { isPhoto ? "照片" : UTType(typeIdentifier)?.localizedDescription ?? "文件" }
+    var fullPath: String { isPhoto ? "照片图库" : URL(fileURLWithPath: sourcePath).appendingPathComponent(relativePath).path }
+    var size: String { isPhoto ? "—" : ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file) }
 }
 
 struct ScannedFile: Sendable {
@@ -123,6 +127,13 @@ struct ScannedFile: Sendable {
     var bytes: Int64
     var modifiedAt: Date?
     var createdAt: Date?
+}
+
+struct ScannedPhoto: Sendable {
+    var localIdentifier: String
+    var name: String
+    var createdAt: Date?
+    var modifiedAt: Date?
 }
 
 enum FileSort: String, CaseIterable, Identifiable, Sendable {

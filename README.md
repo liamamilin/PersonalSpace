@@ -2,7 +2,7 @@
 
 **开发规格 v1.1（能力优先版）｜2026-10-28**
 
-> M1–M4 已实现：原生文件资料库、授权持久化、搜索预览、个人对象、关联与托管副本，以及四类事务、按需识别、事实校对、待办、本地系统提醒和显式允许的正文搜索。后续章节保留原始产品规格，尚未实现的阶段不出现在应用中。
+> M1–M6 的本地能力已实现：原生文件资料库、授权持久化、搜索预览、个人对象、关联与托管副本，以及四类事务、按需识别、事实校对、待办、本地系统提醒、显式正文搜索、Photos 只读关联、敏感标记与备份恢复。后续章节保留原始产品规格。
 
 ## 运行
 
@@ -21,7 +21,7 @@ xcodebuild -project PersonalSpace.xcodeproj -scheme PersonalSpace \
 
 XCTest 会临时重签宿主应用；测试后请再次执行上面的 `build` 命令，恢复普通沙盒签名后再做手工验收。
 
-在 Finder 打开 `.build/DerivedData/Build/Products/Debug/PersonalSpace.app`，或直接用 Xcode Run。此为本地开发构建，未做 Developer ID 签名、公证和发行打包。
+在 Finder 打开 `.build/DerivedData/Build/Products/Debug/PersonalSpace.app`，或直接用 Xcode Run。此为本地开发构建。`scripts/package_release.sh` 可打包本地 ad hoc 签名 Release ZIP；未做 Developer ID 签名、公证和干净账户验收。
 
 ### M1 基础操作
 
@@ -31,7 +31,7 @@ XCTest 会临时重签宿主应用；测试后请再次执行上面的 `build` �
 4. `⌘Q` 退出后重新打开，来源与索引仍在，启动自动补扫。`⌘,` 打开来源设置，可刷新、停止扫描、重新授权和移除来源。
 5. 仅把 `fixtures/M1/A/订单样例.pdf` 移到 A 外的测试位置，刷新 A：旧记录保留并显示不可用。放回后刷新，恢复同一条记录。不要用个人原件做移动测试。
 
-数据库位于应用沙盒的 `Application Support/PersonalSpace/Library.sqlite`。保存来源书签、文件元数据、个人对象与关联、托管副本路径和校验值，不自动读取正文、不联网、不移动或修改原件。M3 仅在点击识别后处理单份凭证，保存用户选择的事实与出处片段，完整识别原文默认只在当前编辑会话展示；M4 只有在用户点击明确保存正文后才进入全文索引。默认跳过隐藏文件、目录包及所有符号链接。失败或停止的扫描保留原有可用状态。一次显示 500 个查询结果，可点底部「显示更多」。
+数据库位于应用沙盒的 `Application Support/PersonalSpace/Library.sqlite`。保存来源书签、文件元数据、个人对象与关联、托管副本路径和校验值，不自动读取正文、不联网、不移动或修改原件。来源目录书签始终以只读方式保存；M6 为保存用户选定位置的备份启用 user-selected.read-write。M3 仅在点击识别后处理单份凭证，保存用户选择的事实与出处片段，完整识别原文默认只在当前编辑会话展示；M4 只有在用户点击明确保存正文后才进入全文索引。默认跳过隐藏文件、目录包及所有符号链接。失败或停止的扫描保留原有可用状态。一次显示 500 个查询结果，可点底部「显示更多」。
 
 实现入口：`PersonalSpace/App/PersonalSpaceApp.swift`；界面与扫描在 `PersonalSpace/Library`；唯一数据层在 `PersonalSpace/Data`；来源设置在 `PersonalSpace/Settings`。测试位于 `PersonalSpaceTests/LibraryTests.swift` 和 `PersonalSpaceTests/ObjectAndArchiveTests.swift`。
 
@@ -64,6 +64,24 @@ XCTest 会临时重签宿主应用；测试后请再次执行上面的 `build` �
 5. 工具栏「搜索范围」启用「搜索已允许保存的正文」后，名称/路径搜索会同时查询 FTS5 正文；支持中文短词。默认搜索仍只查名称与路径。可在详情移除正文索引，原文件不变；已允许的索引重启后保留。
 
 M4 使用系统 SQLite FTS5 trigram，只有明确保存的正文进入索引。四类真实 GUI、36 项测试与本地截图记录见 [M4 证据](evidence/M4/README.md)。
+
+## M5：照片与敏感资料
+
+1. 在「照片图库」主动连接，系统授权后读取真实照片的文件名、日期及本机缓存预览。可选照片关联「我的电脑」，空格放大预览。仅使用 PhotoKit 只读 API，不进入图库包，不修改照片，也不下载 iCloud 原片；大资源不可用时尝试本机缩略缓存。
+2. 图片仅在内存中展示，不导出照片副本，不做照片 OCR、模型处理或正文索引。「打开照片 App」打开系统应用本身，可按文件名和日期查找，不宣称精确跳转某张照片。
+3. 访问失效时对象关系和照片记录保留不可用占位，文件资料库继续可用。重新授权后点「刷新照片」，只恢复实际返回的照片。
+4. 文件名或凭据类型触发「疑似敏感」。详情中可选普通、疑似敏感、敏感；非普通资料拒绝正文识别、FTS 保存和模型。标记敏感会立即删除已有正文索引；名称和路径仍可搜索。明确改回普通后，用户必须再次主动索引。已有手工校对事实保留。
+
+真实记录见 [M5 证据](evidence/M5/README.md)。本地 ad hoc 开发构建代码改变时，macOS 可能再次要求 Photos 授权；正式发行需要稳定 Developer ID 签名。
+
+## M6：备份、规模与本地分发
+
+1. `⌘,` →「备份」→「导出备份」：保存到用户选定的新目录。官方 GRDB/SQLite backup API 建立一致性快照，仅复制该快照引用的 Vault 凭证，逐文件计算 SHA-256，生成版本化 manifest。备份含明文数据库与允许保存的正文，应放在可信位置；外部原件和照片原图不在备份内。
+2. 「选择备份并恢复」先核对完整清单、文件哈希、SQLite 完整性和托管引用，再复制到应用内全新独立测试库。始终不覆盖当前资料库，不使用原来源书签，也不重排通知。在「查看恢复资料」中可预览、搜索和用默认应用打开恢复的托管凭证。
+3. 实测 10,000 个合成小文件：原生扫描器首次/重扫均约 2.08 秒，唯一名称查询中位数约 5.11 毫秒。此为 CLI `-O` 工具链接 Debug GRDB，不能当成 GUI 或 Release 性能；可用 `scripts/benchmark_scan.swift` 重现。
+4. 原生绘制 App 图标、版本 0.6.0 (6)、Release ZIP 与 SHA-256 打包脚本已提供。`scripts/package_release.sh` 构建并打包，已有 Release 时可传 `--skip-build`。本机未发现 Developer ID Application 签名身份，Developer ID、公证、DMG 与干净账户验收未完成，不修改 Gatekeeper 或隔离属性。
+
+最终构建、49 项回归、真实备份恢复及发行限制见 [M6 证据](evidence/M6/README.md) 和 [发布说明](RELEASE_NOTES.md)。
 
 ## 一句话定义
 

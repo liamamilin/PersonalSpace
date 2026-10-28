@@ -20,7 +20,9 @@ struct FileDetailView: View {
 
     var body: some View {
         Group {
-            if let file = model.selectedFile {
+            if let file = model.selectedFile, file.isPhoto {
+                PhotoDetailView(file: file)
+            } else if let file = model.selectedFile {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 20) {
                         VStack(alignment: .leading, spacing: 6) {
@@ -121,6 +123,8 @@ struct FileDetailView: View {
                                 .font(.callout).foregroundStyle(.secondary)
                         }
                         Divider()
+                        SensitivityControl(file: file)
+                        Divider()
                         VStack(alignment: .leading, spacing: 10) {
                             Text("全文搜索").font(.headline)
                             if let date = file.textIndexedAt {
@@ -129,8 +133,8 @@ struct FileDetailView: View {
                                 Text("更新于 " + date.formatted(date: .abbreviated, time: .shortened))
                                     .font(.caption).foregroundStyle(.secondary)
                                 Button("移除正文索引") { Task { await model.removeDocumentText(file) } }
-                            } else if DocumentTextExtractor.isPotentiallySensitive(name: file.name) {
-                                Text("文件名可能包含敏感信息，不读取或保存正文。")
+                            } else if file.sensitivity != "normal" {
+                                Text("此资料已标记敏感或疑似敏感，不读取正文、不保存正文索引、不交给模型。")
                                     .font(.callout).foregroundStyle(.secondary)
                             } else {
                                 Text("只处理你选择的普通凭证，识别正文将以明文保存在本机，用于全文搜索。")
@@ -169,6 +173,27 @@ struct FileDetailView: View {
         VStack(alignment: .leading, spacing: 4) {
             Text(label).font(.caption).foregroundStyle(.secondary)
             Text(value).font(.callout).textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
+        }
+    }
+}
+
+struct SensitivityControl: View {
+    @EnvironmentObject private var model: LibraryModel
+    let file: LibraryFile
+    @State private var updating = false
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("隐私标记").font(.headline)
+            Picker("资料标记", selection: Binding(get: { file.sensitivity }, set: { value in
+                updating = true
+                Task { await model.setSensitivity(file, state: value); updating = false }
+            })) {
+                Text("普通").tag("normal")
+                Text("疑似敏感").tag("suspected")
+                Text("敏感").tag("sensitive")
+            }.disabled(updating)
+            Text("标为敏感会移除已保存的正文索引；名称与路径仍可搜索。改回普通后，需要主动重新建立正文索引。")
+                .font(.caption).foregroundStyle(.secondary)
         }
     }
 }

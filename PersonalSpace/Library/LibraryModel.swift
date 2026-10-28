@@ -15,6 +15,12 @@ final class LibraryModel: ObservableObject {
     @Published var showMatterEditor = false
     @Published var matterDraft = MatterDraft()
     let reminders = ReminderController()
+    let photoLibrary = PhotoLibraryController()
+    @Published var photoPreviewImage: NSImage?
+    @Published var showPhotoPreview = false
+    @Published var backupBusy = false
+    @Published var backupMessage: String?
+    @Published var restoredLibrary: RestoredLibrary?
     var openLibraryWindow: (() -> Void)?
     @Published var objects: [PersonalObject] = []
     @Published var selectedObjectID: String?
@@ -58,6 +64,7 @@ final class LibraryModel: ObservableObject {
     var selectedMatter: MatterRecord? { matters.first { $0.id == selectedMatterID } }
     var isMattersList: Bool { selectedSourceID == "matters" }
     var isActionsList: Bool { selectedSourceID == "actions" }
+    var isPhotosList: Bool { selectedSourceID == PhotoLibraryController.sourceID }
     var isFileList: Bool { !isObjectsList && !isMattersList && !isActionsList }
     var currentObjectID: String? {
         selectedSourceID.hasPrefix("object:") ? String(selectedSourceID.dropFirst(7)) : nil
@@ -97,6 +104,7 @@ final class LibraryModel: ObservableObject {
     func start() async {
         guard !started else { return }
         started = true
+        await refreshPhotosAuthorization()
         await reload()
         await refreshReminderStatus()
         for source in sources { refresh(source) }
@@ -174,7 +182,43 @@ final class LibraryModel: ObservableObject {
     }
 
     func refreshAll() {
+        if isPhotosList { Task { await refreshPhotos() }; return }
         for source in sources { refresh(source) }
+    }
+
+    func refreshPhotosAuthorization() async {
+        photoLibrary.refreshAuthorization()
+        guard let database else { return }
+        do {
+            try await database.setPhotosAccess(allowed: photoLibrary.canRead,
+                message: photoLibrary.canRead ? nil : photoLibrary.authorizationMessage)
+            if !photoLibrary.canRead { photoPreviewImage = nil }
+        } catch { errorMessage = "无法保存照片访问状态，请重试。" }
+    }
+
+    func connectPhotos() async {
+        if await photoLibrary.requestAccess() { await refreshPhotos() }
+        else { await refreshPhotosAuthorization(); await reload() }
+    }
+
+    func refreshPhotos() async {
+        guard let database else { return }
+        await refreshPhotosAuthorization()
+        guard photoLibrary.canRead else { await reload(); return }
+        do {
+            let photos = try await photoLibrary.fetchPhotos()
+            try await database.savePhotos(photos)
+            await reload()
+        } catch is CancellationError { }
+        catch { errorMessage = error.localizedDescription }
+    }
+
+    func setSensitivity(_ file: LibraryFile, state: String) async {
+        guard let database else { return }
+        do {
+            try await database.setSensitivity(itemID: file.id, state: state)
+            await reload()
+        } catch { errorMessage = "未能保存隐私标记，请重试。" }
     }
 
     func refresh(_ source: FolderSource) {
@@ -243,6 +287,7 @@ final class LibraryModel: ObservableObject {
         managedError = nil
         previewError = nil
         guard let file = selectedFile else { return }
+        guard !file.isPhoto else { return }
         if file.isAvailable, let source = sources.first(where: { $0.id == file.sourceID }) {
             do {
                 let access = try FolderAccess.resolve(source)
@@ -280,6 +325,18 @@ final class LibraryModel: ObservableObject {
     }
 
     func quickLook(preferManaged: Bool = false) {
+        if let file = selectedFile, file.isPhoto {
+            guard let identifier = file.photoLocalIdentifier else { return }
+            Task {
+                do {
+                    let image = try await photoLibrary.image(localIdentifier: identifier, large: true)
+                    guard selectedFileID == file.id else { return }
+                    photoPreviewImage = image
+                    showPhotoPreview = true
+                } catch { errorMessage = error.localizedDescription }
+            }
+            return
+        }
         preparePreview(preferManaged: preferManaged)
         if previewURL != nil { showQuickLook = true }
         else if selectedFile != nil { errorMessage = previewError }
@@ -297,6 +354,7 @@ final class LibraryModel: ObservableObject {
     }
 
     func openSelected() {
+        if selectedFile?.isPhoto == true { photoLibrary.openPhotosApp(); return }
         preparePreview()
         guard previewURL != nil else { errorMessage = previewError; return }
         open(previewURL)
@@ -315,6 +373,7 @@ final class LibraryModel: ObservableObject {
     }
 
     func revealSelected() {
+        guard selectedFile?.isPhoto != true else { return }
         preparePreview()
         guard let originalURL else { errorMessage = originalError; return }
         NSWorkspace.shared.activateFileViewerSelecting([originalURL])
@@ -385,7 +444,7 @@ final class LibraryModel: ObservableObject {
     }
 
     func showInLibrary(_ file: LibraryFile) async {
-        selectedSourceID = sources.contains(where: { $0.id == file.sourceID }) ? file.sourceID : "managed"
+        selectedSourceID = file.isPhoto ? PhotoLibraryController.sourceID : sources.contains(where: { $0.id == file.sourceID }) ? file.sourceID : "managed"
         search = file.name
         await reload()
         selectedFileID = file.id
@@ -393,7 +452,7 @@ final class LibraryModel: ObservableObject {
 
     func archiveSelected() async {
         guard let database, let store = managedStore, let file = selectedFile,
-              file.managedCopyPath == nil, archivingID == nil,
+              !file.isPhoto, file.managedCopyPath == nil, archivingID == nil,
               let source = sources.first(where: { $0.id == file.sourceID }) else { return }
         archivingID = file.id
         defer { archivingID = nil }
@@ -544,10 +603,7 @@ final class LibraryModel: ObservableObject {
     }
 
     func extractText(from file: LibraryFile) async throws -> DocumentTextResult {
-        // Do not read a copied body either if its indexed name is potentially sensitive.
-        guard !DocumentTextExtractor.isPotentiallySensitive(name: file.name) else {
-            throw DocumentReadError.sensitive
-        }
+        try await requireOrdinaryDocument(file)
         var root: URL?
         var documentURL: URL?
         if file.isAvailable, let source = sources.first(where: { $0.id == file.sourceID }) {
@@ -567,11 +623,26 @@ final class LibraryModel: ObservableObject {
         let scopedRoot = root
         let worker = Task.detached(priority: .userInitiated) {
             defer { scopedRoot?.stopAccessingSecurityScopedResource() }
-            return try DocumentTextExtractor.extract(from: documentURL)
+            return try DocumentTextExtractor.extract(from: documentURL, allowSensitiveName: true)
         }
-        return try await withTaskCancellationHandler {
+        let result = try await withTaskCancellationHandler {
             try await worker.value
         } onCancel: { worker.cancel() }
+        try await requireOrdinaryDocument(file)
+        return result
+    }
+
+    private func requireOrdinaryDocument(_ file: LibraryFile) async throws {
+        guard let database, let current = try await database.file(id: file.id),
+              !current.isPhoto, current.sensitivity == "normal" else { throw DocumentReadError.sensitive }
+    }
+
+    func suggestFacts(file: LibraryFile, text: String, allowedKeys: [String]) async throws -> [DocumentFactSuggestion] {
+        try await requireOrdinaryDocument(file)
+        let result = try await LocalFactAssistant.suggest(text: text, fileName: file.name,
+            allowedKeys: allowedKeys, allowSensitiveName: true)
+        try await requireOrdinaryDocument(file)
+        return result
     }
 
     func saveDocumentText(file: LibraryFile, text: String) async -> Bool {
@@ -605,11 +676,60 @@ final class LibraryModel: ObservableObject {
             await reload()
         } catch { errorMessage = "移除正文索引失败，请重试。" }
     }
+
+    func exportBackup() {
+        guard !backupBusy, let database, let managedStore else { return }
+        let panel = NSSavePanel()
+        panel.title = "导出 PersonalSpace 备份"
+        panel.message = "备份包含明文资料库和托管副本，请选择你信任的位置。原来源文件和系统照片不会被复制。"
+        panel.nameFieldStringValue = "PersonalSpace-" + Date().formatted(.iso8601.year().month().day()) + ".personalspacebackup"
+        panel.canCreateDirectories = true
+        guard panel.runModal() == .OK, let destination = panel.url else { return }
+        backupBusy = true
+        backupMessage = "正在建立一致性快照、复制托管凭证并校验…"
+        Task {
+            let scoped = destination.startAccessingSecurityScopedResource()
+            defer { if scoped { destination.stopAccessingSecurityScopedResource() }; backupBusy = false }
+            do {
+                let manifest = try await LibraryBackup.export(database: database, vaultRoot: managedStore.root, to: destination)
+                backupMessage = "备份已导出并校验：\(manifest.files.count) 个文件。\n" + destination.path
+            } catch { backupMessage = "备份未完成：" + error.localizedDescription }
+        }
+    }
+
+    func restoreBackup() {
+        guard !backupBusy else { return }
+        let panel = NSOpenPanel()
+        panel.title = "选择 PersonalSpace 备份"
+        panel.message = "先完整校验，再恢复到应用内的全新独立测试库。当前资料库不会被替换。"
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = false
+        guard panel.runModal() == .OK, let source = panel.url else { return }
+        backupBusy = true
+        backupMessage = "正在校验备份并恢复到全新测试资料库…"
+        Task {
+            let scoped = source.startAccessingSecurityScopedResource()
+            defer { if scoped { source.stopAccessingSecurityScopedResource() }; backupBusy = false }
+            do {
+                let support = try FileManager.default.url(for: .applicationSupportDirectory,
+                    in: .userDomainMask, appropriateFor: nil, create: true)
+                let parent = support.appendingPathComponent("PersonalSpace/RestoredLibraries", isDirectory: true)
+                try FileManager.default.createDirectory(at: parent, withIntermediateDirectories: true)
+                let destination = parent.appendingPathComponent(UUID().uuidString, isDirectory: true)
+                _ = try await LibraryBackup.restore(from: source, to: destination)
+                let restored = try LibraryDatabase(path: destination.appendingPathComponent("library.sqlite").path)
+                let copies = try await restored.files(FileQuery(managedOnly: true, limit: Int.max)).files
+                restoredLibrary = RestoredLibrary(root: destination, files: copies)
+                backupMessage = "备份校验与独立恢复完成：\(copies.count) 份托管凭证可供检查。当前资料库未替换，提醒未重新安排。"
+            } catch { backupMessage = "恢复未完成，当前资料库保持原状：" + error.localizedDescription }
+        }
+    }
 }
 
 private enum DocumentReadError: LocalizedError {
     case sensitive
     var errorDescription: String? {
-        "此文件名疑似包含密码、恢复码或账号资料，已停止读取正文。可以手动填写必要字段。"
+        "照片或已标记敏感的资料不读取正文、不交给模型处理。可手动填写必要字段；普通文件的隐私标记可在详情中调整。"
     }
 }

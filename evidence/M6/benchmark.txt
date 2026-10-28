@@ -1,0 +1,25 @@
+PersonalSpace M6 — actual native scanner benchmark
+timestamp_utc=2026-10-28T11:17:44Z
+os=Version 26.6.2 (Build 25G83)
+architecture=arm64
+logical_processors=12
+physical_memory_gib=48.00
+profile=benchmark Swift -O; existing Debug GRDB.o; same FolderScanner/LibraryDatabase source as app
+scope=CLI synthetic workspace; not app UI, authorization, or scrolling benchmark
+run_directory=.build/benchmark/run-75AF88A1-4EF1-4B5B-91B0-8D5B986A7948
+synthetic_files=10000; directories=100; content=small UTF-8 text
+generation_ms=1025.308
+first_scan_ms=2080.054
+first_scan_count=10000
+default_visible_result_count=500
+rescan_ms=2080.420
+rescan_count=10000
+unique_name_query=合成资料-09999; matches=1; repetitions=20
+name_query_first_ms=5.150
+name_query_median_ms=5.114
+name_query_p95_ms=5.468
+chinese_short_name_query=订单; matches=10; elapsed_ms=3.835
+peak_process_rss_mib=37.91
+source_content_sample_sha256=PASS; unchanged_samples=26
+reopened_database_count=10000
+result=PASS

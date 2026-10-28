@@ -10,7 +10,10 @@ struct PersonalSpaceApp: App {
         .defaultSize(width: 1160, height: 740)
         .commands { LibraryCommands(model: model) }
         Settings {
-            SourcesView().environmentObject(model)
+            TabView {
+                SourcesView().tabItem { Label("来源", systemImage: "folder") }
+                BackupView().tabItem { Label("备份", systemImage: "externaldrive") }
+            }.environmentObject(model)
         }
     }
 }
@@ -37,14 +40,14 @@ struct LibraryCommands: Commands {
             Button("打开可用文件") { model.openSelected() }.keyboardShortcut("o")
                 .disabled(model.selectedFile == nil)
             Button("在 Finder 中显示") { model.revealSelected() }.keyboardShortcut("r", modifiers: [.command, .shift])
-                .disabled(model.selectedFile == nil)
+                .disabled(model.selectedFile == nil || model.selectedFile?.isPhoto == true)
             Button("关联到对象…") { model.showLinkSheet = true }.disabled(model.selectedFile == nil)
             Button("从资料创建事务…") { model.createMatter(kind: .order) }.disabled(model.selectedFile == nil || !model.isFileList)
             Button("保存副本到资料库") { Task { await model.archiveSelected() } }
-                .disabled(model.selectedFile == nil || model.selectedFile?.managedCopyPath != nil || model.archivingID != nil)
+                .disabled(model.selectedFile == nil || model.selectedFile?.isPhoto == true || model.selectedFile?.managedCopyPath != nil || model.archivingID != nil)
             Divider()
             Button("刷新来源") { model.refreshAll() }.keyboardShortcut("r")
-                .disabled(model.sources.isEmpty || model.isScanning)
+                .disabled((model.sources.isEmpty && !model.isPhotosList) || model.isScanning)
         }
     }
 }

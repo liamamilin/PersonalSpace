@@ -1,0 +1,6 @@
+Actual GUI backup: PASS
+Manifest file count: 2
+Independent SHA-256 + size check: PASS
+Snapshot row counts: {"item": 13, "personal_object": 1, "object_item": 3, "matter": 4, "fact": 23, "action": 4, "document_text": 1}
+Restored Vault opened in WPS: confirmed by real UI and open-file metadata
+Current library was not replaced.

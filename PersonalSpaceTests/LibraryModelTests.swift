@@ -4,6 +4,26 @@ import XCTest
 
 @MainActor
 final class LibraryModelTests: XCTestCase {
+    func testStaleOrdinaryFileCannotReadOrFeedModelAfterSensitiveClassification() async throws {
+        let database = try LibraryDatabase(path: ":memory:")
+        try await database.saveSource(id: "sensitive-source", name: "合成来源", path: "/synthetic/sensitive", bookmark: Data([1]))
+        try database.saveBatch([ScannedFile(relativePath: "普通凭证.txt", name: "普通凭证.txt",
+            typeIdentifier: "public.plain-text", bytes: 10)], sourceID: "sensitive-source", scanID: "seed")
+        let rows = try await database.files(FileQuery()).files
+        let stale = try XCTUnwrap(rows.first)
+        XCTAssertEqual(stale.sensitivity, "normal")
+        let model = LibraryModel(database: database)
+        try await database.setSensitivity(itemID: stale.id, state: "sensitive")
+        do {
+            _ = try await model.extractText(from: stale)
+            XCTFail("A stale editor must check current classification before accessing a source")
+        } catch { XCTAssertTrue(error.localizedDescription.contains("敏感")) }
+        do {
+            _ = try await model.suggestFacts(file: stale, text: "合成文本", allowedKeys: ["product"])
+            XCTFail("Classification must reject before invoking even an unavailable model")
+        } catch { XCTAssertTrue(error.localizedDescription.contains("敏感")) }
+    }
+
     func testCancelledReloadDoesNotShowFailureAndNextReloadStillLoadsRealRows() async throws {
         let database = try LibraryDatabase(path: ":memory:")
         try await database.saveSource(id: "cancel-source", name: "取消回归来源",

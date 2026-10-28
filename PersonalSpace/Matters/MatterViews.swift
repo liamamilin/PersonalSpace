@@ -662,8 +662,8 @@ struct MatterEditorView: View {
         assistantTask = Task {
             defer { assistantTask = nil }
             do {
-                let suggestions = try await LocalFactAssistant.suggest(text: String(result.text.prefix(3_500)),
-                    fileName: file.name, allowedKeys: kind.fieldKeys)
+                let suggestions = try await model.suggestFacts(file: file, text: String(result.text.prefix(3_500)),
+                    allowedKeys: kind.fieldKeys)
                 try Task.checkCancellation()
                 importCandidates(suggestions, from: file, origin: "model")
             } catch is CancellationError { }

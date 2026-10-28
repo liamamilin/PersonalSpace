@@ -26,10 +26,12 @@ struct DocumentTextExtractor {
     private static let maximumTextBytes = 1_048_576
     private static let maximumTextCharacters = 200_000
 
-    static func extract(from url: URL) throws -> DocumentTextResult {
+    // The override is only for a caller that has just checked the user's saved
+    // normal classification. A filename alone never grants this override.
+    static func extract(from url: URL, allowSensitiveName: Bool = false) throws -> DocumentTextResult {
         try Task.checkCancellation()
         // Check before opening the body, including for a copied/managed document.
-        guard !isPotentiallySensitive(name: url.lastPathComponent) else {
+        guard allowSensitiveName || !isPotentiallySensitive(name: url.lastPathComponent) else {
             throw DocumentTextError.sensitiveDocument
         }
         guard url.isFileURL else { throw DocumentTextError.unreadableDocument }
@@ -73,6 +75,12 @@ struct DocumentTextExtractor {
     }
 
     static func isPotentiallySensitive(name: String) -> Bool {
+        let lowercasedName = name.lowercased()
+        let credentialExtensions: Set<String> = ["key", "pem", "p12", "pfx", "kdb", "kdbx", "jks", "keystore", "p8", "ppk"]
+        if credentialExtensions.contains((lowercasedName as NSString).pathExtension)
+            || lowercasedName == ".env" || lowercasedName.hasPrefix(".env.") {
+            return true
+        }
         let normalized = name.folding(options: [.caseInsensitive, .diacriticInsensitive, .widthInsensitive],
                                       locale: Locale(identifier: "en_US_POSIX"))
             .lowercased()
@@ -82,7 +90,7 @@ struct DocumentTextExtractor {
             "备用码", "備用碼", "备份码", "備份碼", "备援码", "備援碼",
             "助记词", "助記詞", "私钥", "私鑰", "账号", "帐号", "帳號", "賬號", "账户", "帐户", "帳戶", "賬戶",
             "password", "passwd", "passphrase", "recoverycode", "recoverykey", "backupcode",
-            "privatekey", "secretkey", "seedphrase", "mnemonic", "credential", "account"
+            "privatekey", "secretkey", "seedphrase", "mnemonic", "credential", "account", "idrsa", "ided25519"
         ]
         return indicators.contains { normalized.contains($0) }
     }

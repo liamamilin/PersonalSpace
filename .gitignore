@@ -16,3 +16,10 @@ evidence/test-summary.json
 
 # Actual UI screenshots remain local; publish source and text verification.
 evidence/M*/*.png
+
+# Raw local signing/permission evidence is never published.
+evidence/M5/entitlements.txt
+evidence/M6/entitlements.plist
+evidence/M6/signature.txt
+evidence/M6/signing-identities.txt
+evidence/M6/LOCAL-BUILD.txt

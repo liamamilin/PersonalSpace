@@ -6,6 +6,8 @@ struct LibraryView: View {
     @Environment(\.openWindow) private var openWindow
     @Environment(\.scenePhase) private var scenePhase
     @State private var showInspector = true
+    @State private var compactWindow = false
+    @State private var showCompactInspector = false
     @State private var sortOrder = [KeyPathComparator(\LibraryFile.name)]
     @FocusState private var searchFocused: Bool
 
@@ -27,6 +29,7 @@ struct LibraryView: View {
                     Section("资料库") {
                         Label("所有资料", systemImage: "tray.full").tag("all")
                         Label("已托管", systemImage: "externaldrive.badge.checkmark").tag("managed")
+                        Label("照片图库", systemImage: "photo.on.rectangle").tag(PhotoLibraryController.sourceID)
                     }
                     Section("个人对象") {
                         Label("个人对象", systemImage: "desktopcomputer").tag("objects")
@@ -107,6 +110,7 @@ struct LibraryView: View {
                 if model.isObjectsList { ObjectsView() }
                 else if model.isMattersList { MattersView() }
                 else if model.isActionsList { ActionsView() }
+                else if model.isPhotosList { PhotosLibraryView() }
                 else { content }
                 Divider()
                 HStack(spacing: 8) {
@@ -128,12 +132,8 @@ struct LibraryView: View {
                 .padding(.horizontal, 16).padding(.vertical, 10)
             }
             .navigationTitle(navigationTitle)
-            .inspector(isPresented: $showInspector) {
-                Group {
-                    if model.isObjectsList { ObjectInfoView() }
-                    else if model.isMattersList || model.isActionsList { MatterDetailView() }
-                    else { FileDetailView() }
-                }.inspectorColumnWidth(min: 300, ideal: 340, max: 440)
+            .inspector(isPresented: Binding(get: { showInspector && !compactWindow }, set: { showInspector = $0 })) {
+                inspectorContent.inspectorColumnWidth(min: 300, ideal: 340, max: 440)
             }
         }
         .searchable(text: $model.search, placement: .toolbar, prompt: model.isFileList ? (model.searchBody ? "搜索名称、路径或已允许的正文" : "搜索名称或路径") : "搜索名称或备注")
@@ -162,7 +162,7 @@ struct LibraryView: View {
                         model.refresh(source)
                     } else { model.refreshAll() }
                 }
-                .disabled(model.sources.isEmpty || model.isScanning)
+                .disabled((model.sources.isEmpty && !model.isPhotosList) || model.isScanning)
                 .help("刷新所选来源或所有来源（⌘R）")
                 Menu {
                     Picker("排序", selection: $model.sort) {
@@ -171,17 +171,33 @@ struct LibraryView: View {
                     Toggle("升序", isOn: $model.ascending)
                 } label: { Label("排序", systemImage: "arrow.up.arrow.down") }
                     .disabled(!model.isFileList)
-                Button("详情", systemImage: "sidebar.right") { showInspector.toggle() }
+                Button("详情", systemImage: "sidebar.right") {
+                    if compactWindow { showCompactInspector.toggle() }
+                    else { showInspector.toggle() }
+                }
+                    .popover(isPresented: $showCompactInspector) {
+                        inspectorContent.frame(width: 360, height: 540)
+                    }
                     .help("显示或隐藏文件详情")
             }
         }
         .frame(minWidth: 720, minHeight: 500)
+        .onGeometryChange(for: Bool.self, of: { $0.size.width < 1_000 }) { compact in
+            compactWindow = compact
+            if !compact { showCompactInspector = false }
+        }
         .task {
             model.openLibraryWindow = { openWindow(id: "library") }
             await model.start()
         }
         .onChange(of: scenePhase) {
-            if scenePhase == .active { Task { await model.refreshReminderStatus() } }
+            if scenePhase == .active {
+                Task {
+                    await model.refreshReminderStatus()
+                    await model.refreshPhotosAuthorization()
+                    await model.reload()
+                }
+            }
         }
         .task(id: queryKey) {
             do { try await Task.sleep(for: .milliseconds(120)) } catch { return }
@@ -189,7 +205,7 @@ struct LibraryView: View {
         }
         .onChange(of: model.searchFocusRequest) { searchFocused = true }
         .onChange(of: model.search) { model.limit = 500 }
-        .onChange(of: model.selectedSourceID) { model.limit = 500 }
+        .onChange(of: model.selectedSourceID) { model.limit = 500; showCompactInspector = false }
         .onChange(of: sortOrder) {
             guard let first = sortOrder.first else { return }
             switch first.keyPath {
@@ -202,6 +218,9 @@ struct LibraryView: View {
             model.ascending = first.order == .forward
         }
         .sheet(isPresented: $model.showQuickLook) { QuickLookSheet().environmentObject(model) }
+        .sheet(isPresented: $model.showPhotoPreview, onDismiss: { model.photoPreviewImage = nil }) {
+            PhotoPreviewSheet().environmentObject(model)
+        }
         .sheet(isPresented: $model.showObjectEditor) {
             ObjectEditorView(object: model.objectBeingEdited).environmentObject(model)
         }
@@ -214,17 +233,24 @@ struct LibraryView: View {
         }
     }
 
+    @ViewBuilder private var inspectorContent: some View {
+        if model.isObjectsList { ObjectInfoView() }
+        else if model.isMattersList || model.isActionsList { MatterDetailView() }
+        else { FileDetailView() }
+    }
+
     private var navigationTitle: String {
         if model.isObjectsList { return "个人对象" }
         if model.isMattersList { return "事务" }
         if model.isActionsList { return "待办" }
+        if model.isPhotosList { return "照片图库" }
         if model.currentObjectID != nil { return model.selectedObject?.name ?? "个人对象" }
         if model.selectedSourceID == "managed" { return "已托管" }
         return model.sources.first(where: { $0.id == model.selectedSourceID })?.name ?? "资料库"
     }
 
     @ViewBuilder private var content: some View {
-        if model.sources.isEmpty && model.currentObjectID == nil && model.selectedSourceID != "managed" {
+        if model.sources.isEmpty && model.total == 0 && model.currentObjectID == nil && model.selectedSourceID != "managed" {
             ContentUnavailableView {
                 Label("把散落的个人资料放到一个入口", systemImage: "folder.badge.plus")
             } description: {
@@ -285,7 +311,9 @@ struct LibraryView: View {
                     if let objectID = model.currentObjectID {
                         Button("解除与此对象的关联") { Task { await model.unlink(id, from: objectID) } }
                     }
-                    Button("在 Finder 中显示") { model.selectedFileID = id; model.revealSelected() }
+                    if model.files.first(where: { $0.id == id })?.isPhoto != true {
+                        Button("在 Finder 中显示") { model.selectedFileID = id; model.revealSelected() }
+                    }
                 }
             } primaryAction: { ids in
                 model.selectedFileID = ids.first

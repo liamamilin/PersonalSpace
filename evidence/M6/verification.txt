@@ -1,0 +1,10 @@
+Final tests: 49 passed, 0 failures (evidence/M6-final-test.log)
+Release build: BUILD SUCCEEDED (evidence/M6-release-final-build.log)
+Package: strict codesign + Sandbox + AppIcon + unzip integrity PASS (evidence/M6-final-package.log)
+Final archive: PersonalSpace-0.6.0-6-local-arm64-20261028T113408Z.zip
+GUI: backup export/independent restore/Quick Look/default open PASS
+GUI: compact search/Space preview/popover inspector/wide inspector PASS
+Photos: real authorization, preview, object link, same-build restart PASS
+Original M1 six steps: PASS; synthetic moved source restored
+System notifications: real delivery and user click to correct matter PASS; cancelled reload failure banner regression fixed
+Unverified: Developer ID, notarization, DMG, clean-account install, complete VoiceOver spoken run, Foundation Models generation (deviceNotEligible)

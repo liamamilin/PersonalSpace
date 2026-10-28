@@ -24,9 +24,11 @@ struct LocalFactAssistant {
     }
 
     static func suggest(text: String, fileName: String,
-                        allowedKeys: [String]) async throws -> [DocumentFactSuggestion] {
+                        allowedKeys: [String], allowSensitiveName: Bool = false) async throws -> [DocumentFactSuggestion] {
         try Task.checkCancellation()
-        guard !DocumentTextExtractor.isPotentiallySensitive(name: fileName) else {
+        // Callers may opt in only after checking a fresh user-marked normal
+        // classification, never merely to suppress a filename warning.
+        guard allowSensitiveName || !DocumentTextExtractor.isPotentiallySensitive(name: fileName) else {
             throw LocalFactAssistantError.sensitiveDocument
         }
         guard isAvailable else { throw LocalFactAssistantError.unavailable(availabilityMessage()) }

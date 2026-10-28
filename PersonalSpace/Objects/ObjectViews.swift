@@ -161,9 +161,9 @@ struct LinkToObjectSheet: View {
                                     if await model.linkItems([file.id], to: object.id) { dismiss() }
                                     saving = false
                                 }
-                            }.disabled(saving)
+                            }.disabled(saving).accessibilityLabel("关联到「\(object.name)」")
                         }
-                    }.padding(.vertical, 5)
+                    }.padding(.vertical, 5).accessibilityElement(children: .contain)
                 }
             }
             HStack { Spacer(); Button("完成") { dismiss() }.keyboardShortcut(.cancelAction) }
@@ -189,7 +189,7 @@ struct AddObjectFilesSheet: View {
                 TextField("搜索名称或路径", text: $search)
                 Toggle("仅已托管", isOn: $managedOnly).toggleStyle(.checkbox)
             }
-            Text("可按住 ⌘ 选择多份资料。关联不会更改原文件。")
+            Text("可按住 ⌘ 选择多份资料。关联不会更改原文件或照片。")
                 .font(.caption).foregroundStyle(.secondary)
             Table(candidates, selection: $selected) {
                 TableColumn("名称", value: \.name)

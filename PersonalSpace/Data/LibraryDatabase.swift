@@ -128,6 +128,22 @@ final class LibraryDatabase: Sendable {
                 END;
                 """)
         }
+        migrator.registerMigration("M5-photos-sensitivity") { db in
+            try db.execute(sql: """
+                ALTER TABLE source ADD COLUMN kind TEXT NOT NULL DEFAULT 'folder';
+                ALTER TABLE item ADD COLUMN kind TEXT NOT NULL DEFAULT 'file';
+                ALTER TABLE item ADD COLUMN photoLocalIdentifier TEXT;
+                ALTER TABLE item ADD COLUMN sensitivity TEXT NOT NULL DEFAULT 'normal'
+                    CHECK(sensitivity IN ('normal', 'suspected', 'sensitive'));
+                """)
+            for row in try Row.fetchAll(db, sql: "SELECT id, name FROM item") {
+                let name: String = row["name"]
+                guard DocumentTextExtractor.isPotentiallySensitive(name: name) else { continue }
+                let id: String = row["id"]
+                try db.execute(sql: "UPDATE item SET sensitivity='suspected' WHERE id=?", arguments: [id])
+                try db.execute(sql: "DELETE FROM document_text WHERE itemID=?", arguments: [id])
+            }
+        }
         try migrator.migrate(queue)
     }
 
@@ -143,7 +159,7 @@ final class LibraryDatabase: Sendable {
         try await queue.read { db in
             try FolderSource.fetchAll(db, sql: """
                 SELECT s.*, (SELECT COUNT(*) FROM item i WHERE i.sourceID = s.id) AS fileCount
-                FROM source s WHERE s.isEnabled=1 ORDER BY s.name COLLATE NOCASE, s.id
+                FROM source s WHERE s.isEnabled=1 AND s.kind='folder' ORDER BY s.name COLLATE NOCASE, s.id
                 """)
         }
     }
@@ -153,14 +169,15 @@ final class LibraryDatabase: Sendable {
         try await queue.read { db in
             try FolderSource.fetchOne(db, sql: """
                 SELECT s.*, (SELECT COUNT(*) FROM item i WHERE i.sourceID = s.id) AS fileCount
-                FROM source s WHERE s.path=?
+                FROM source s WHERE s.path=? AND s.kind='folder'
                 """, arguments: [path])
         }
     }
 
     func saveSource(id: String, name: String, path: String, bookmark: Data) async throws {
+        guard id != "photos", path != "photos://system-library" else { throw LibraryDataError.invalidFolderSource }
         try await queue.write { db in
-            let retainedID = try String.fetchOne(db, sql: "SELECT id FROM source WHERE path=?",
+            let retainedID = try String.fetchOne(db, sql: "SELECT id FROM source WHERE path=? AND kind='folder'",
                                                 arguments: [path]) ?? id
             try db.execute(sql: """
                 INSERT INTO source(id, name, path, bookmark) VALUES (?, ?, ?, ?)
@@ -185,17 +202,21 @@ final class LibraryDatabase: Sendable {
 
     func saveBatch(_ files: [ScannedFile], sourceID: String, scanID: String) throws {
         try queue.write { db in
+            guard try Bool.fetchOne(db, sql: "SELECT kind='folder' FROM source WHERE id=?", arguments: [sourceID]) == true else {
+                throw LibraryDataError.invalidFolderSource
+            }
             for file in files {
+                let sensitivity = DocumentTextExtractor.isPotentiallySensitive(name: file.name) ? "suspected" : "normal"
                 try db.execute(sql: """
                     INSERT INTO item(id, sourceID, relativePath, name, typeIdentifier, bytes,
-                        modifiedAt, createdAt, indexedAt, scanID, isAvailable)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+                        modifiedAt, createdAt, indexedAt, scanID, isAvailable, sensitivity)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)
                     ON CONFLICT(sourceID, relativePath) DO UPDATE SET name=excluded.name,
                         typeIdentifier=excluded.typeIdentifier, bytes=excluded.bytes,
                         modifiedAt=excluded.modifiedAt, createdAt=excluded.createdAt,
                         indexedAt=excluded.indexedAt, scanID=excluded.scanID, isAvailable=1
                     """, arguments: [UUID().uuidString, sourceID, file.relativePath, file.name,
-                        file.typeIdentifier, file.bytes, file.modifiedAt, file.createdAt, Date(), scanID])
+                        file.typeIdentifier, file.bytes, file.modifiedAt, file.createdAt, Date(), scanID, sensitivity])
             }
         }
     }
@@ -203,10 +224,62 @@ final class LibraryDatabase: Sendable {
     // Only a complete enumeration may mark old paths unavailable.
     func finishScan(sourceID: String, scanID: String) throws {
         try queue.write { db in
+            guard try Bool.fetchOne(db, sql: "SELECT kind='folder' FROM source WHERE id=?", arguments: [sourceID]) == true else {
+                throw LibraryDataError.invalidFolderSource
+            }
             try db.execute(sql: "UPDATE item SET isAvailable=0 WHERE sourceID=? AND scanID<>?",
                            arguments: [sourceID, scanID])
             try db.execute(sql: "UPDATE source SET lastScannedAt=?, lastError=NULL WHERE id=?",
                            arguments: [Date(), sourceID])
+        }
+    }
+
+    func savePhotos(_ photos: [ScannedPhoto]) async throws {
+        guard photos.allSatisfy({ !$0.localIdentifier.isEmpty }) else { throw LibraryDataError.invalidPhoto }
+        try await queue.write { db in
+            try db.execute(sql: """
+                INSERT INTO source(id, name, path, bookmark, isEnabled, kind)
+                VALUES ('photos', '照片', 'photos://system-library', ?, 1, 'photos')
+                ON CONFLICT(id) DO UPDATE SET isEnabled=1, lastError=NULL
+                """, arguments: [Data()])
+            let now = Date()
+            for photo in photos {
+                let name = photo.name.isEmpty ? "照片" : photo.name
+                let sensitivity = DocumentTextExtractor.isPotentiallySensitive(name: name) ? "suspected" : "normal"
+                try db.execute(sql: """
+                    INSERT INTO item(id, sourceID, relativePath, name, typeIdentifier, bytes,
+                        createdAt, modifiedAt, indexedAt, scanID, isAvailable, kind, photoLocalIdentifier, sensitivity)
+                    VALUES (?, 'photos', ?, ?, 'public.image', 0, ?, ?, ?, 'photos', 1, 'photo', ?, ?)
+                    ON CONFLICT(sourceID, relativePath) DO UPDATE SET name=excluded.name,
+                        createdAt=excluded.createdAt, modifiedAt=excluded.modifiedAt, indexedAt=excluded.indexedAt,
+                        isAvailable=1, kind='photo', photoLocalIdentifier=excluded.photoLocalIdentifier
+                    """, arguments: [UUID().uuidString, photo.localIdentifier, name,
+                        photo.createdAt, photo.modifiedAt, now, photo.localIdentifier, sensitivity])
+            }
+        }
+    }
+
+    func setPhotosAccess(allowed: Bool, message: String? = nil) async throws {
+        try await queue.write { db in
+            try db.execute(sql: """
+                INSERT INTO source(id, name, path, bookmark, isEnabled, kind, lastError)
+                VALUES ('photos', '照片', 'photos://system-library', ?, ?, 'photos', ?)
+                ON CONFLICT(id) DO UPDATE SET isEnabled=excluded.isEnabled, lastError=excluded.lastError
+                """, arguments: [Data(), allowed, message])
+            if !allowed {
+                try db.execute(sql: "UPDATE item SET isAvailable=0 WHERE sourceID='photos'")
+            }
+        }
+    }
+
+    func setSensitivity(itemID: String, state: String) async throws {
+        guard ["normal", "suspected", "sensitive"].contains(state) else { throw LibraryDataError.invalidSensitivity }
+        try await queue.write { db in
+            try db.execute(sql: "UPDATE item SET sensitivity=? WHERE id=?", arguments: [state, itemID])
+            guard db.changesCount == 1 else { throw LibraryDataError.documentNotFound }
+            if state != "normal" {
+                try db.execute(sql: "DELETE FROM document_text WHERE itemID=?", arguments: [itemID])
+            }
         }
     }
 
@@ -240,13 +313,13 @@ final class LibraryDatabase: Sendable {
                 if query.searchBody {
                     if word.count < 3 {
                         // Trigram cannot match 1–2 characters; keep short Chinese queries useful.
-                        matches.append("EXISTS (SELECT 1 FROM document_text dt WHERE dt.itemID=i.id AND dt.bodyText LIKE ? ESCAPE '\\')")
+                        matches.append("(i.sensitivity='normal' AND EXISTS (SELECT 1 FROM document_text dt WHERE dt.itemID=i.id AND dt.bodyText LIKE ? ESCAPE '\\'))")
                         arguments += ["%\(escaped)%"]
                     } else {
                         matches.append("""
-                            i.id IN (SELECT dt.itemID FROM document_text dt
+                            (i.sensitivity='normal' AND i.id IN (SELECT dt.itemID FROM document_text dt
                                 JOIN document_text_fts ON document_text_fts.rowid=dt.rowid
-                                WHERE document_text_fts MATCH ?)
+                                WHERE document_text_fts MATCH ?))
                             """)
                         // Quote the entire token so user text is never treated as FTS operators.
                         arguments += ["\"" + word.replacingOccurrences(of: "\"", with: "\"\"") + "\""]
@@ -364,10 +437,10 @@ final class LibraryDatabase: Sendable {
             throw LibraryDataError.emptyDocumentText
         }
         try await queue.write { db in
-            guard let name = try String.fetchOne(db, sql: "SELECT name FROM item WHERE id=?", arguments: [itemID]) else {
+            guard let sensitivity = try String.fetchOne(db, sql: "SELECT sensitivity FROM item WHERE id=?", arguments: [itemID]) else {
                 throw LibraryDataError.documentNotFound
             }
-            guard !DocumentTextExtractor.isPotentiallySensitive(name: name) else {
+            guard sensitivity == "normal" else {
                 throw LibraryDataError.sensitiveDocument
             }
             try db.execute(sql: """
@@ -385,7 +458,10 @@ final class LibraryDatabase: Sendable {
 
     func documentText(itemID: String) async throws -> String? {
         try await queue.read { db in
-            try String.fetchOne(db, sql: "SELECT bodyText FROM document_text WHERE itemID=?", arguments: [itemID])
+            try String.fetchOne(db, sql: """
+                SELECT dt.bodyText FROM document_text dt JOIN item i ON i.id=dt.itemID
+                WHERE dt.itemID=? AND i.sensitivity='normal'
+                """, arguments: [itemID])
         }
     }
 
@@ -564,9 +640,11 @@ final class LibraryDatabase: Sendable {
         i.id, i.sourceID, i.relativePath, i.name, i.typeIdentifier, i.bytes,
         i.modifiedAt, i.createdAt, (i.isAvailable AND s.isEnabled) AS isAvailable,
         i.managedCopyPath, i.managedSHA256, i.managedAt,
+        i.kind AS itemKind, i.photoLocalIdentifier, i.sensitivity,
         (SELECT dt.indexedAt FROM document_text dt WHERE dt.itemID=i.id) AS textIndexedAt,
         s.name AS sourceName, s.path AS sourcePath,
-        CASE WHEN s.isEnabled=0 THEN '已停止管理此来源，请重新添加文件夹恢复原件访问。'
+        CASE WHEN s.isEnabled=0 AND s.kind='photos' THEN COALESCE(s.lastError, '照片图库访问已关闭，请重新授权照片。')
+             WHEN s.isEnabled=0 THEN '已停止管理此来源，请重新添加文件夹恢复原件访问。'
              ELSE s.lastError END AS sourceError
         """
 
@@ -580,6 +658,7 @@ final class LibraryDatabase: Sendable {
 private enum LibraryDataError: LocalizedError {
     case invalidObject, invalidManagedCopy, managedCopyNotSaved, invalidMatter, invalidAction
     case documentTextTooLong, emptyDocumentText, documentNotFound, sensitiveDocument
+    case invalidFolderSource, invalidPhoto, invalidSensitivity
 
     var errorDescription: String? {
         switch self {
@@ -592,6 +671,9 @@ private enum LibraryDataError: LocalizedError {
         case .emptyDocumentText: "没有可保存的正文。"
         case .documentNotFound: "资料记录已不可用，未保存正文索引。"
         case .sensitiveDocument: "文件名疑似包含密码、恢复码或账号资料，不能保存到普通正文索引。"
+        case .invalidFolderSource: "此来源不是已授权文件夹，不能进行目录扫描。"
+        case .invalidPhoto: "照片标识无效，未保存照片资料。"
+        case .invalidSensitivity: "请选择普通、疑似敏感或敏感分类。"
         }
     }
 }
