@@ -10,7 +10,7 @@ struct LibraryView: View {
     @FocusState private var searchFocused: Bool
 
     private var queryKey: String {
-        "\(model.search)|\(model.selectedSourceID)|\(model.sort.rawValue)|\(model.ascending)|\(model.limit)"
+        "\(model.search)|\(model.searchBody)|\(model.selectedSourceID)|\(model.sort.rawValue)|\(model.ascending)|\(model.limit)"
     }
 
     var body: some View {
@@ -114,7 +114,7 @@ struct LibraryView: View {
                         ProgressView().controlSize(.mini)
                         Text("扫描中 · 已发现 \(model.scanning.values.reduce(0, +)) 个文件")
                     } else {
-                        Text(model.isObjectsList ? "\(model.objects.count) 个个人对象" : model.isMattersList ? "\(model.matters.count) 个事务" : model.isActionsList ? "\(model.actions.count) 项行动" : "\(model.total) 份资料")
+                        Text(model.isObjectsList ? "\(model.objects.count) 个个人对象" : model.isMattersList ? "共 \(model.matters.count) 个事务" : model.isActionsList ? "\(model.actions.count) 项行动" : "\(model.total) 份资料")
                         if model.isFileList && model.selectedFile != nil { Text("· 已选择 1 份") }
                     }
                     Spacer()
@@ -122,6 +122,7 @@ struct LibraryView: View {
                         Button("显示更多") { model.limit += 500 }.buttonStyle(.link)
                     }
                     Text("本地索引").foregroundStyle(.tertiary)
+                    if model.isFileList && model.searchBody { Text("· 含已允许正文") }
                 }
                 .font(.caption).foregroundStyle(.secondary)
                 .padding(.horizontal, 16).padding(.vertical, 10)
@@ -135,18 +136,27 @@ struct LibraryView: View {
                 }.inspectorColumnWidth(min: 300, ideal: 340, max: 440)
             }
         }
-        .searchable(text: $model.search, placement: .toolbar, prompt: model.isFileList ? "搜索名称或路径" : "搜索名称或备注")
+        .searchable(text: $model.search, placement: .toolbar, prompt: model.isFileList ? (model.searchBody ? "搜索名称、路径或已允许的正文" : "搜索名称或路径") : "搜索名称或备注")
         .searchFocused($searchFocused)
         .toolbar {
             ToolbarItemGroup {
                 Menu {
                     Button("创建个人对象") { model.createObject() }
-                    Button("创建订单事务") { model.createOrder() }
+                    Menu("创建事务") {
+                        ForEach(MatterKind.allCases) { kind in
+                            Button("创建" + kind.title) { model.createMatter(kind: kind) }
+                        }
+                    }
                 } label: { Label("新建", systemImage: "plus") }
                     .disabled(model.storageUnavailable)
                 Button("添加文件夹", systemImage: "folder.badge.plus") { model.addFolders() }
                     .disabled(model.storageUnavailable)
                     .help("添加要索引的文件夹")
+                Menu {
+                    Toggle("搜索已允许保存的正文", isOn: $model.searchBody)
+                } label: { Label("搜索范围", systemImage: model.searchBody ? "doc.text.magnifyingglass" : "magnifyingglass") }
+                    .disabled(!model.isFileList)
+                    .help(model.searchBody ? "搜索名称、路径及已允许的正文" : "仅搜索名称与路径")
                 Button("刷新", systemImage: "arrow.clockwise") {
                     if let source = model.sources.first(where: { $0.id == model.selectedSourceID }) {
                         model.refresh(source)
@@ -228,7 +238,7 @@ struct LibraryView: View {
                 Label(model.search.isEmpty ? (model.isScanning ? "正在查找文件" : model.currentObjectID != nil ? "还没有关联资料" : model.selectedSourceID == "managed" ? "还没有托管副本" : "这个来源还没有文件") : "没有找到相关资料",
                       systemImage: model.search.isEmpty ? "doc.text.magnifyingglass" : "magnifyingglass")
             } description: {
-                Text(model.search.isEmpty ? (model.currentObjectID != nil ? "添加已有资料，把来自不同位置的凭证关联到这个对象。" : model.selectedSourceID == "managed" ? "选择一份资料，在详情中点击「保存副本到资料库」。" : "仅索引普通文件，跳过隐藏文件、目录包和符号链接。") : "试试文件名或路径中的其它关键词。")
+                Text(model.search.isEmpty ? (model.currentObjectID != nil ? "添加已有资料，把来自不同位置的凭证关联到这个对象。" : model.selectedSourceID == "managed" ? "选择一份资料，在详情中点击「保存副本到资料库」。" : "仅索引普通文件，跳过隐藏文件、目录包和符号链接。") : model.searchBody ? "试试名称、路径或已允许正文中的其它关键词。" : "试试文件名或路径中的其它关键词。")
             } actions: {
                 if !model.search.isEmpty { Button("清除搜索") { model.search = "" } }
                 else if model.currentObjectID != nil {
@@ -271,7 +281,7 @@ struct LibraryView: View {
                     Button("系统预览") { model.selectedFileID = id; model.quickLook() }
                     Button("打开可用文件") { model.selectedFileID = id; model.openSelected() }
                     Button("关联到对象…") { model.selectedFileID = id; model.showLinkSheet = true }
-                    Button("创建订单事务…") { model.selectedFileID = id; model.createOrder() }
+                    Button("创建事务…") { model.selectedFileID = id; model.createMatter(kind: .order) }
                     if let objectID = model.currentObjectID {
                         Button("解除与此对象的关联") { Task { await model.unlink(id, from: objectID) } }
                     }

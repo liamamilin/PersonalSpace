@@ -23,6 +23,8 @@ struct DocumentFactSuggestion: Sendable {
 struct DocumentTextExtractor {
     private static let maximumOCRPages = 12
     private static let maximumImageDimension = 3_200
+    private static let maximumTextBytes = 1_048_576
+    private static let maximumTextCharacters = 200_000
 
     static func extract(from url: URL) throws -> DocumentTextResult {
         try Task.checkCancellation()
@@ -32,12 +34,16 @@ struct DocumentTextExtractor {
         }
         guard url.isFileURL else { throw DocumentTextError.unreadableDocument }
         do {
-            let values = try url.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey])
+            let values = try url.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey, .fileSizeKey])
             guard values.isRegularFile == true, values.isSymbolicLink != true else {
                 throw DocumentTextError.unreadableDocument
             }
             let fileExtension = url.pathExtension.lowercased()
             let type = UTType(filenameExtension: fileExtension)
+            if ["txt", "md", "markdown"].contains(fileExtension) {
+                guard (values.fileSize ?? 0) <= maximumTextBytes else { throw DocumentTextError.textTooLarge }
+                return try result(text: readPlainText(from: url), note: nil)
+            }
             // Extension fallbacks keep standard formats usable when Launch
             // Services cannot resolve tags in a sandboxed/background process.
             if fileExtension == "pdf" || type?.conforms(to: .pdf) == true {
@@ -79,6 +85,31 @@ struct DocumentTextExtractor {
             "privatekey", "secretkey", "seedphrase", "mnemonic", "credential", "account"
         ]
         return indicators.contains { normalized.contains($0) }
+    }
+
+    private static func readPlainText(from url: URL) throws -> String {
+        let handle = try FileHandle(forReadingFrom: url)
+        defer { try? handle.close() }
+        var data = Data()
+        // A bounded read also handles a file growing after its metadata check.
+        while let chunk = try handle.read(upToCount: min(32_768, maximumTextBytes + 1 - data.count)), !chunk.isEmpty {
+            try Task.checkCancellation()
+            data.append(chunk)
+            guard data.count <= maximumTextBytes else { throw DocumentTextError.textTooLarge }
+        }
+        let text: String?
+        if data.starts(with: [0xFF, 0xFE]) {
+            text = String(data: data.dropFirst(2), encoding: .utf16LittleEndian)
+        } else if data.starts(with: [0xFE, 0xFF]) {
+            text = String(data: data.dropFirst(2), encoding: .utf16BigEndian)
+        } else if data.starts(with: [0xEF, 0xBB, 0xBF]) {
+            text = String(data: data.dropFirst(3), encoding: .utf8)
+        } else {
+            text = String(data: data, encoding: .utf8)
+        }
+        guard let text else { throw DocumentTextError.unsupportedTextEncoding }
+        guard text.count <= maximumTextCharacters else { throw DocumentTextError.textTooLarge }
+        return text
     }
 
     private static func extractPDF(from url: URL) throws -> DocumentTextResult {
@@ -211,7 +242,18 @@ struct DocumentTextExtractor {
             ("order_number", "text", "订单号|订单编号|订单号码|order number|order no\\.?|order id"),
             ("purchase_date", "date", "购买日期|购买时间|下单日期|下单时间|订单日期|purchase date|order date"),
             ("received_date", "date", "收货日期|收货时间|签收日期|签收时间|送达日期|received date|delivery date"),
-            ("amount", "amount", "实付金额|支付金额|订单金额|实付款|总金额|合计|amount paid|total amount|amount|total")
+            ("amount", "amount", "实付金额|支付金额|订单金额|合同金额|订阅金额|实付款|总金额|合计|amount paid|total amount|amount|total"),
+            ("counterparty", "text", "合同相对方|合同对方|相对方|对方名称|乙方|counterparty"),
+            ("contract_number", "text", "合同编号|合同号|contract number|contract no\\.?|contract id"),
+            ("start_date", "date", "开始日期|起始日期|生效日期|合同开始日期|start date|effective date"),
+            ("end_date", "date", "结束日期|终止日期|到期日期|合同到期日期|合同结束日期|end date|expiry date|expiration date"),
+            ("renewal_terms", "text", "续订条款|续约条款|续费条款|renewal terms|renewal policy"),
+            ("cancellation_terms", "text", "取消条款|解约条款|终止条款|取消方式|cancellation terms|cancellation policy"),
+            ("warranty_end_date", "date", "保修到期日期|保修到期日|保修截止日期|保修结束日期|质保到期日期|warranty end date|warranty expiry date"),
+            ("warranty_terms", "text", "保修条款|保修范围|质保条款|warranty terms|warranty coverage"),
+            ("service", "text", "服务名称|订阅服务|订阅名称|service name|service(?![ \\t]+provider\\b)|subscription name"),
+            ("provider", "text", "服务商|服务提供方|提供商|provider|service provider"),
+            ("next_billing_date", "date", "下次扣费日期|下次扣费日|下次账单日期|下次续费日期|next billing date|next payment date")
         ]
         var suggestions: [DocumentFactSuggestion] = []
         let lines = text.components(separatedBy: .newlines)
@@ -229,7 +271,7 @@ struct DocumentTextExtractor {
                 let rawValue = String(line[valueRange]).trimmingCharacters(in: .whitespacesAndNewlines)
                 let value: String
                 if field.type == "date" {
-                    guard let date = explicitDate(rawValue) else { continue }
+                    guard let date = normalizingExplicitDate(rawValue) else { continue }
                     value = date
                 } else {
                     value = String(rawValue.prefix(200))
@@ -242,10 +284,10 @@ struct DocumentTextExtractor {
         return suggestions
     }
 
-    private static func explicitDate(_ value: String) -> String? {
+    static func normalizingExplicitDate(_ value: String) -> String? {
         // Require a complete, explicitly written calendar date. Do not infer a
         // year, treat purchase as receipt, or derive any policy deadline.
-        let pattern = "^(\\d{4})\\s*[-/.年]\\s*(\\d{1,2})\\s*[-/.月]\\s*(\\d{1,2})(?:日|号)?(?=$|[^0-9])"
+        let pattern = "^(\\d{4})\\s*[-/.年]\\s*(\\d{1,2})\\s*[-/.月]\\s*(\\d{1,2})(?:日|号)?(?:[ T](?:[01]?\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d)?)?$"
         guard let expression = try? NSRegularExpression(pattern: pattern),
               let match = expression.firstMatch(in: value, range: NSRange(value.startIndex..<value.endIndex, in: value)) else {
             return nil
@@ -266,21 +308,26 @@ struct DocumentTextExtractor {
 
 private enum DocumentTextError: LocalizedError {
     case sensitiveDocument, unsupportedFormat, unreadableDocument, lockedPDF, recognitionFailed, noReadableText
+    case textTooLarge, unsupportedTextEncoding
 
     var errorDescription: String? {
         switch self {
         case .sensitiveDocument:
-            "此文件名疑似包含密码、恢复码或账号资料，已停止读取正文。请选择普通订单凭证，或手动填写必要字段。"
+            "此文件名疑似包含密码、恢复码或账号资料，已停止读取正文。请选择普通凭证，或手动填写必要字段。"
         case .unsupportedFormat:
-            "此格式暂不支持文字识别。请选择 PDF 或系统支持的图片，也可以手动填写订单。"
+            "此格式暂不支持文字识别。请选择 PDF、系统支持的图片、TXT 或 Markdown，也可以手动填写事务。"
         case .unreadableDocument:
             "无法读取此凭证。请检查原件是否可用、来源是否已授权，或改为手动填写。"
         case .lockedPDF:
-            "此 PDF 需要密码，无法读取文字。请先在系统应用中解锁另存，或手动填写订单。"
+            "此 PDF 需要密码，无法读取文字。请先在系统应用中解锁另存，或手动填写事务。"
         case .recognitionFailed:
-            "本机文字识别未能完成。可以重试、换用更清晰的凭证，或手动填写订单。"
+            "本机文字识别未能完成。可以重试、换用更清晰的凭证，或手动填写事务。"
         case .noReadableText:
-            "未识别到可读文字。可以换用更清晰的 PDF 或图片，或手动填写订单。"
+            "未识别到可读文字。可以换用更清晰的 PDF、图片或文本，或手动填写事务。"
+        case .textTooLarge:
+            "纯文本识别仅支持不超过 1 MiB 且不超过 20 万字符的文件。超出限制，未返回部分识别结果。请拆分后重试，也可以手动填写。"
+        case .unsupportedTextEncoding:
+            "无法按 UTF-8 或带 BOM 的 UTF-16 读取此文本。请另存为 UTF-8 后重试，也可以手动填写。"
         }
     }
 }

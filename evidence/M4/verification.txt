@@ -1,0 +1,12 @@
+M4 verification — 2026-10-28
+BUILD SUCCEEDED; TEST SUCCEEDED; 36 tests, 0 failures.
+Plain sandbox build after XCTest; strict codesign verified.
+GUI: 4 matter types persisted, 3 new type templates extracted real PDF fields.
+GUI: explicit confirmed future reminders scheduled, then completed/cancelled.
+GUI: original evidence previews matched source paths.
+GUI: default metadata search excluded body; explicit FTS search found body-only phrase.
+GUI: deleting body index removed match; rebuilding restored Chinese short-word match.
+GUI: restart retained matters/facts/evidence and explicitly saved text.
+GUI: filtered-out selection now clears its inspector.
+Foundation Models availability on this Mac: deviceNotEligible. Actual generation unverified.
+Screenshots and raw logs stay local.

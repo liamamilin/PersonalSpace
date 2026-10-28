@@ -19,12 +19,12 @@ struct LibraryCommands: Commands {
     @ObservedObject var model: LibraryModel
     var body: some Commands {
         CommandGroup(replacing: .newItem) {
-            Button(model.isMattersList || model.isActionsList ? "新建订单事务…" : "新建个人对象…") {
+            Button(model.isMattersList || model.isActionsList ? "新建事务…" : "新建个人对象…") {
                 if model.isMattersList || model.isActionsList { model.createOrder() }
                 else { model.createObject() }
             }.keyboardShortcut("n")
                 .disabled(model.storageUnavailable)
-            Button("新建订单事务…") { model.createOrder() }.keyboardShortcut("n", modifiers: [.command, .shift])
+            Button("新建事务…") { model.createMatter(kind: .order) }.keyboardShortcut("n", modifiers: [.command, .shift])
                 .disabled(model.storageUnavailable)
             Button("添加文件夹…") { model.addFolders() }.keyboardShortcut("o", modifiers: [.command, .shift])
                 .disabled(model.storageUnavailable)
@@ -39,7 +39,7 @@ struct LibraryCommands: Commands {
             Button("在 Finder 中显示") { model.revealSelected() }.keyboardShortcut("r", modifiers: [.command, .shift])
                 .disabled(model.selectedFile == nil)
             Button("关联到对象…") { model.showLinkSheet = true }.disabled(model.selectedFile == nil)
-            Button("从资料创建订单…") { model.createOrder() }.disabled(model.selectedFile == nil || !model.isFileList)
+            Button("从资料创建事务…") { model.createMatter(kind: .order) }.disabled(model.selectedFile == nil || !model.isFileList)
             Button("保存副本到资料库") { Task { await model.archiveSelected() } }
                 .disabled(model.selectedFile == nil || model.selectedFile?.managedCopyPath != nil || model.archivingID != nil)
             Divider()

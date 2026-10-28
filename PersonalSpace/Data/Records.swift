@@ -108,6 +108,7 @@ struct LibraryFile: Decodable, FetchableRecord, Identifiable, Sendable, Equatabl
     var managedCopyPath: String? = nil
     var managedSHA256: String? = nil
     var managedAt: Date? = nil
+    var textIndexedAt: Date? = nil
 
     var modifiedSortDate: Date { modifiedAt ?? .distantPast }
     var kind: String { UTType(typeIdentifier)?.localizedDescription ?? "文件" }
@@ -153,6 +154,7 @@ struct FileQuery: Sendable {
     var objectID: String? = nil
     var matterID: String? = nil
     var managedOnly = false
+    var searchBody = false
     var sort: FileSort = .name
     var ascending = true
     var limit = 500

@@ -115,10 +115,33 @@ struct FileDetailView: View {
                         }
                         Divider()
                         VStack(alignment: .leading, spacing: 10) {
-                            Text("订单跟进").font(.headline)
-                            Button("从此凭证创建订单", systemImage: "doc.badge.plus") { model.createOrder() }
+                            Text("事务跟进").font(.headline)
+                            Button("从此凭证创建事务", systemImage: "doc.badge.plus") { model.createMatter(kind: .order) }
                             Text("可按需识别文字、校对事实，再填写明确的提醒日期。")
                                 .font(.callout).foregroundStyle(.secondary)
+                        }
+                        Divider()
+                        VStack(alignment: .leading, spacing: 10) {
+                            Text("全文搜索").font(.headline)
+                            if let date = file.textIndexedAt {
+                                Label("已允许保存此正文供搜索", systemImage: "text.badge.checkmark")
+                                    .font(.callout).foregroundStyle(.secondary)
+                                Text("更新于 " + date.formatted(date: .abbreviated, time: .shortened))
+                                    .font(.caption).foregroundStyle(.secondary)
+                                Button("移除正文索引") { Task { await model.removeDocumentText(file) } }
+                            } else if DocumentTextExtractor.isPotentiallySensitive(name: file.name) {
+                                Text("文件名可能包含敏感信息，不读取或保存正文。")
+                                    .font(.callout).foregroundStyle(.secondary)
+                            } else {
+                                Text("只处理你选择的普通凭证，识别正文将以明文保存在本机，用于全文搜索。")
+                                    .font(.callout).foregroundStyle(.secondary)
+                                if model.indexingID == file.id {
+                                    HStack { ProgressView().controlSize(.small); Text("正在识别并保存正文…") }
+                                } else {
+                                    Button("识别并保存正文以供搜索") { Task { await model.indexSelectedDocument() } }
+                                        .disabled(model.indexingID != nil || model.previewURL == nil)
+                                }
+                            }
                         }
                         Divider()
                         VStack(alignment: .leading, spacing: 14) {

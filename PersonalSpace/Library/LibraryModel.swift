@@ -33,6 +33,8 @@ final class LibraryModel: ObservableObject {
     @Published var files: [LibraryFile] = []
     @Published var total = 0
     @Published var search = ""
+    @Published var searchBody = false
+    @Published var indexingID: String?
     @Published var selectedSourceID = "all"
     @Published var selectedFileID: String?
     @Published var sort: FileSort = .name
@@ -67,7 +69,7 @@ final class LibraryModel: ObservableObject {
     var query: FileQuery {
         let isSource = !["all", "objects", "managed", "matters", "actions"].contains(selectedSourceID) && currentObjectID == nil
         return FileQuery(search: isObjectsList ? "" : search, sourceID: isSource ? selectedSourceID : nil,
-            objectID: currentObjectID, managedOnly: selectedSourceID == "managed",
+            objectID: currentObjectID, managedOnly: selectedSourceID == "managed", searchBody: searchBody,
             sort: sort, ascending: ascending, limit: limit)
     }
     var isScanning: Bool { !scanning.isEmpty }
@@ -418,8 +420,13 @@ final class LibraryModel: ObservableObject {
     }
 
     func createOrder() {
+        createMatter(kind: .order)
+    }
+
+    func createMatter(kind: MatterKind) {
         errorMessage = nil
         matterDraft = MatterDraft()
+        matterDraft.kind = kind.rawValue
         if let file = selectedFile, isFileList { matterDraft.itemIDs = [file.id] }
         if let objectID = currentObjectID { matterDraft.objectID = objectID }
         showMatterEditor = true
@@ -445,7 +452,7 @@ final class LibraryModel: ObservableObject {
             }
             matterDraft = draft
             showMatterEditor = true
-        } catch { errorMessage = "无法读取订单，请重试。" }
+        } catch { errorMessage = "无法读取事务，请重试。" }
     }
 
     func showMatter(_ id: String) async {
@@ -505,13 +512,13 @@ final class LibraryModel: ObservableObject {
             if let saved {
                 reminderMessage = await reminders.apply(actionID: saved.id, title: saved.title,
                     remindAt: saved.remindAt, dateConfirmed: saved.dateConfirmed, state: saved.state).message
-            } else { reminderMessage = previous.isEmpty ? "订单已保存。" : "订单已保存，原系统提醒已取消。" }
+            } else { reminderMessage = previous.isEmpty ? "事务已保存。" : "事务已保存，原系统提醒已取消。" }
             await reload()
             await showMatter(draft.id)
             await refreshReminderStatus(updateMessage: false)
             return true
         } catch {
-            errorMessage = (error as? LocalizedError)?.errorDescription ?? "保存订单失败，请检查字段后重试。"
+            errorMessage = (error as? LocalizedError)?.errorDescription ?? "保存事务失败，请检查字段后重试。"
             return false
         }
     }
@@ -565,6 +572,38 @@ final class LibraryModel: ObservableObject {
         return try await withTaskCancellationHandler {
             try await worker.value
         } onCancel: { worker.cancel() }
+    }
+
+    func saveDocumentText(file: LibraryFile, text: String) async -> Bool {
+        guard let database else { return false }
+        do {
+            try await database.saveDocumentText(itemID: file.id, text: text)
+            await reload()
+            return true
+        } catch {
+            errorMessage = (error as? LocalizedError)?.errorDescription ?? "保存正文索引失败，请重试。"
+            return false
+        }
+    }
+
+    func indexSelectedDocument() async {
+        guard let file = selectedFile, indexingID == nil else { return }
+        indexingID = file.id
+        errorMessage = nil
+        defer { indexingID = nil }
+        do {
+            let result = try await extractText(from: file)
+            _ = await saveDocumentText(file: file, text: result.text)
+        } catch is CancellationError { }
+        catch { errorMessage = error.localizedDescription }
+    }
+
+    func removeDocumentText(_ file: LibraryFile) async {
+        guard let database else { return }
+        do {
+            try await database.deleteDocumentText(itemID: file.id)
+            await reload()
+        } catch { errorMessage = "移除正文索引失败，请重试。" }
     }
 }
 

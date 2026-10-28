@@ -1,25 +1,6 @@
 import SwiftUI
 
-private enum OrderFields {
-    static let keys = ["product", "merchant", "order_number", "purchase_date", "received_date", "amount"]
-
-    static func title(_ key: String) -> String {
-        switch key {
-        case "product": "商品"
-        case "merchant": "商家"
-        case "order_number": "订单号"
-        case "purchase_date": "购买日期"
-        case "received_date": "签收日期"
-        case "amount": "金额"
-        default: key
-        }
-    }
-
-    static func valueType(_ key: String) -> String {
-        if key.hasSuffix("_date") { return "date" }
-        return key == "amount" ? "amount" : "text"
-    }
-
+private enum ActionLabels {
     static func stateTitle(_ state: String) -> String {
         switch state {
         case "active": "待处理"
@@ -34,11 +15,15 @@ private enum OrderFields {
 struct MattersView: View {
     @EnvironmentObject private var model: LibraryModel
     @State private var sortOrder = [KeyPathComparator(\MatterRecord.updatedAt, order: .reverse)]
+    @State private var kindFilter = "all"
+    @State private var statusFilter = "all"
 
     private var filtered: [MatterRecord] {
         model.matters.filter {
-            model.search.isEmpty || $0.title.localizedStandardContains(model.search)
-                || $0.notes.localizedStandardContains(model.search)
+            (kindFilter == "all" || $0.kind == kindFilter)
+                && (statusFilter == "all" || $0.status == statusFilter)
+                && (model.search.isEmpty || $0.title.localizedStandardContains(model.search)
+                    || $0.notes.localizedStandardContains(model.search))
         }.sorted(using: sortOrder)
     }
 
@@ -46,46 +31,88 @@ struct MattersView: View {
         Group {
             if model.matters.isEmpty {
                 ContentUnavailableView {
-                    Label("从一份订单开始跟进", systemImage: "doc.text")
+                    Label("从一份凭证开始跟进", systemImage: "doc.text")
                 } description: {
-                    Text("关联凭证、校对关键事实，再为需要处理的事确认提醒时间。")
+                    Text("创建订单、合同、保修或订阅，关联凭证、校对事实，再确认行动的提醒时间。")
                 } actions: {
-                    Button("创建订单事务") { model.createOrder() }.buttonStyle(.borderedProminent)
+                    Button("创建事务") { model.createMatter(kind: .order) }.buttonStyle(.borderedProminent)
                 }
-            } else if filtered.isEmpty {
-                ContentUnavailableView.search(text: model.search)
             } else {
-                Table(filtered, selection: $model.selectedMatterID, sortOrder: $sortOrder) {
-                    TableColumn("订单", value: \.title) { matter in
-                        Label(matter.title, systemImage: "doc.text").frame(height: 32)
-                    }.width(min: 150, ideal: 230)
-                    TableColumn("下一步") { matter in
-                        let action = model.actions.first { $0.matterID == matter.id && ["active", "needs_date"].contains($0.state) }
-                        Text(action?.title ?? "尚无待办").foregroundStyle(.secondary).lineLimit(1)
-                    }.width(min: 100, ideal: 160)
-                    TableColumn("凭证", value: \.itemCount) { Text($0.itemCount, format: .number) }
-                        .width(min: 45, ideal: 55)
-                    TableColumn("更新日期", value: \.updatedAt) {
-                        Text($0.updatedAt.formatted(date: .numeric, time: .omitted)).foregroundStyle(.secondary)
-                    }.width(min: 80, ideal: 100)
-                }
-                .contextMenu(forSelectionType: String.self) { ids in
-                    if let id = ids.first, let matter = model.matters.first(where: { $0.id == id }) {
-                        Button("查看事务") { Task { await model.showMatter(id) } }
-                        Button("编辑订单") { Task { await model.editMatter(matter) } }
+                VStack(spacing: 0) {
+                    HStack(spacing: 16) {
+                        Picker("类型", selection: $kindFilter) {
+                            Text("全部类型").tag("all")
+                            ForEach(MatterKind.allCases) { Text($0.title).tag($0.rawValue) }
+                        }.frame(maxWidth: 190)
+                        Picker("状态", selection: $statusFilter) {
+                            Text("全部状态").tag("all")
+                            Text("跟进中").tag("active")
+                            Text("已完成").tag("completed")
+                        }.frame(maxWidth: 170)
+                        Spacer(minLength: 0)
+                    }.padding(.horizontal, 16).padding(.vertical, 12)
+                    Divider()
+                    if filtered.isEmpty {
+                        ContentUnavailableView {
+                            Label("没有匹配的事务", systemImage: "line.3.horizontal.decrease.circle")
+                        } description: {
+                            Text("调整类型、状态或搜索关键词。")
+                        } actions: {
+                            Button("清除筛选") { kindFilter = "all"; statusFilter = "all"; model.search = "" }
+                        }
+                    } else {
+                        matterTable
                     }
-                } primaryAction: { ids in
-                    if let id = ids.first { Task { await model.showMatter(id) } }
-                }
-                .onKeyPress(.return) {
-                    guard let id = model.selectedMatterID else { return .ignored }
-                    Task { await model.showMatter(id) }
-                    return .handled
                 }
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .task(id: model.selectedMatterID) { await model.loadMatterDetails() }
+        .onChange(of: filtered.map(\.id)) { _, visibleIDs in
+            if let id = model.selectedMatterID, !visibleIDs.contains(id) { model.selectedMatterID = nil }
+        }
+        .onChange(of: model.selectedMatterID) { _, id in
+            // Explicit navigation (new matter or notification) must reveal its row.
+            if let id, model.matters.contains(where: { $0.id == id }),
+               !filtered.contains(where: { $0.id == id }) {
+                kindFilter = "all"
+                statusFilter = "all"
+                model.search = ""
+            }
+        }
+    }
+
+    private var matterTable: some View {
+        Table(filtered, selection: $model.selectedMatterID, sortOrder: $sortOrder) {
+            TableColumn("事务", value: \.title) { matter in
+                Label(matter.title, systemImage: (MatterKind(rawValue: matter.kind) ?? .order).image).frame(height: 32)
+            }.width(min: 150, ideal: 210)
+            TableColumn("类型", value: \.kind) { matter in
+                Text((MatterKind(rawValue: matter.kind) ?? .order).title).foregroundStyle(.secondary)
+            }.width(min: 50, ideal: 65)
+            TableColumn("下一步") { matter in
+                let action = model.actions.first { $0.matterID == matter.id && ["active", "needs_date"].contains($0.state) }
+                Text(action?.title ?? "尚无待办").foregroundStyle(.secondary).lineLimit(1)
+            }.width(min: 100, ideal: 150)
+            TableColumn("凭证", value: \.itemCount) { Text($0.itemCount, format: .number) }
+                .width(min: 45, ideal: 55)
+            TableColumn("更新日期", value: \.updatedAt) {
+                Text($0.updatedAt.formatted(date: .numeric, time: .omitted)).foregroundStyle(.secondary)
+            }.width(min: 80, ideal: 100)
+        }
+        .contextMenu(forSelectionType: String.self) { ids in
+            if let id = ids.first, let matter = model.matters.first(where: { $0.id == id }) {
+                Button("查看事务") { Task { await model.showMatter(id) } }
+                Button("编辑事务") { Task { await model.editMatter(matter) } }
+            }
+        } primaryAction: { ids in
+            if let id = ids.first { Task { await model.showMatter(id) } }
+        }
+        .onKeyPress(.return) {
+            guard let id = model.selectedMatterID else { return .ignored }
+            Task { await model.showMatter(id) }
+            return .handled
+        }
     }
 }
 
@@ -103,13 +130,13 @@ struct MatterDetailView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 20) {
                     VStack(alignment: .leading, spacing: 8) {
-                        Label(matter.title, systemImage: "doc.text").font(.title2.bold()).textSelection(.enabled)
-                        Text(matter.status == "completed" ? "订单 · 已完成" : "订单 · 跟进中")
+                        Label(matter.title, systemImage: (MatterKind(rawValue: matter.kind) ?? .order).image).font(.title2.bold()).textSelection(.enabled)
+                        Text((MatterKind(rawValue: matter.kind) ?? .order).title + (matter.status == "completed" ? " · 已完成" : " · 跟进中"))
                             .foregroundStyle(.secondary)
                         if let object = model.objects.first(where: { $0.id == matter.objectID }) {
                             Label(object.name, systemImage: "desktopcomputer").font(.callout).foregroundStyle(.secondary)
                         }
-                        Button("编辑订单与行动", systemImage: "pencil") {
+                        Button("编辑事务与行动", systemImage: "pencil") {
                             Task { await model.editMatter(matter) }
                         }
                     }
@@ -117,7 +144,7 @@ struct MatterDetailView: View {
                     VStack(alignment: .leading, spacing: 12) {
                         Text("相关凭证").font(.headline)
                         if model.matterFiles.isEmpty {
-                            Text("尚未关联凭证。编辑订单可添加已有资料。")
+                            Text("尚未关联凭证。编辑事务可添加已有资料。")
                                 .font(.callout).foregroundStyle(.secondary)
                         }
                         ForEach(model.matterFiles) { file in
@@ -142,7 +169,7 @@ struct MatterDetailView: View {
                         ForEach(model.matterFacts) { fact in
                             VStack(alignment: .leading, spacing: 5) {
                                 HStack {
-                                    Text(OrderFields.title(fact.key)).font(.caption).foregroundStyle(.secondary)
+                                    Text(MatterKind.title(for: fact.key)).font(.caption).foregroundStyle(.secondary)
                                     Spacer()
                                     Label(fact.state == "confirmed" ? "已确认" : "候选",
                                           systemImage: fact.state == "confirmed" ? "checkmark.circle" : "questionmark.circle")
@@ -171,7 +198,7 @@ struct MatterDetailView: View {
                         ForEach(relatedActions) { action in
                             VStack(alignment: .leading, spacing: 8) {
                                 Text(action.title).font(.subheadline.bold()).textSelection(.enabled)
-                                Text(OrderFields.stateTitle(action.state)).font(.caption).foregroundStyle(.secondary)
+                                Text(ActionLabels.stateTitle(action.state)).font(.caption).foregroundStyle(.secondary)
                                 if let date = action.remindAt, action.dateConfirmed {
                                     Label(date.formatted(date: .abbreviated, time: .shortened), systemImage: "calendar")
                                         .font(.callout)
@@ -240,9 +267,9 @@ struct ActionsView: View {
                 ContentUnavailableView {
                     Label("把下一步留在这里", systemImage: "checklist")
                 } description: {
-                    Text("创建订单事务后，可以保存待补日期的行动，或确认具体时间并安排系统提醒。")
+                    Text("创建事务后，可以保存待补日期的行动，或确认具体时间并安排系统提醒。")
                 } actions: {
-                    Button("创建订单事务") { model.createOrder() }.buttonStyle(.borderedProminent)
+                    Button("创建事务") { model.createMatter(kind: .order) }.buttonStyle(.borderedProminent)
                 }
             } else if filtered.isEmpty {
                 ContentUnavailableView.search(text: model.search)
@@ -314,19 +341,26 @@ struct MatterEditorView: View {
     @State private var knownFiles: [String: LibraryFile] = [:]
     @State private var showFilePicker = false
     @State private var recognitionFileID: String?
+    @State private var recognizedFileID: String?
     @State private var recognition: DocumentTextResult?
     @State private var recognitionError: String?
     @State private var importMessage: String?
     @State private var recognitionTask: Task<Void, Never>?
+    @State private var assistantTask: Task<Void, Never>?
+    @State private var assistantError: String?
+    @State private var savingText = false
+    @State private var textSaved = false
+    @State private var textSaveMessage: String?
     @State private var showRecognizedText = true
     @State private var saving = false
 
     init(draft: MatterDraft) {
         var editable = draft
-        for key in OrderFields.keys where !editable.facts.contains(where: { $0.key == key }) {
-            editable.facts.append(FactDraft(key: key, valueType: OrderFields.valueType(key)))
+        let kind = MatterKind(rawValue: draft.kind) ?? .order
+        for key in kind.fieldKeys where !editable.facts.contains(where: { $0.key == key }) {
+            editable.facts.append(FactDraft(key: key, valueType: MatterKind.valueType(for: key)))
         }
-        var editableAction = draft.action ?? ActionDraft(title: "检查订单与售后")
+        var editableAction = draft.action ?? ActionDraft(title: kind.defaultActionTitle)
         // A completed/cancelled action may retain its due date after its system reminder was removed.
         // Re-enabling it must not silently confirm a newly generated default reminder time.
         if editableAction.remindAt == nil { editableAction.dateConfirmed = false }
@@ -338,12 +372,19 @@ struct MatterEditorView: View {
     }
 
     private var attachedFiles: [LibraryFile] { draft.itemIDs.compactMap { knownFiles[$0] } }
+    private var kind: MatterKind { MatterKind(rawValue: draft.kind) ?? .order }
+    private var editing: Bool { model.matters.contains(where: { $0.id == draft.id }) }
+    private var processingText: Bool { recognitionTask != nil || assistantTask != nil || savingText }
+    private var extraFieldKeys: [String] {
+        draft.facts.filter { !kind.fieldKeys.contains($0.key) && !$0.valueText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+            .map(\.key)
+    }
     private var finishedAction: Bool { action.state == "done" || action.state == "cancelled" }
     private var invalidReminder: Bool {
         hasAction && !finishedAction && action.dateConfirmed && reminderDate <= Date()
     }
     private var canSave: Bool {
-        !saving && recognitionTask == nil && !draft.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        !saving && !processingText && !draft.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             && (!hasAction || !action.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             && !invalidReminder
     }
@@ -351,14 +392,19 @@ struct MatterEditorView: View {
     var body: some View {
         VStack(spacing: 0) {
             HStack {
-                Text(model.matters.contains(where: { $0.id == draft.id }) ? "编辑订单事务" : "创建订单事务")
+                Text((editing ? "编辑" : "创建") + kind.title + "事务")
                     .font(.title2.bold())
                 Spacer()
             }.padding(24)
             Divider()
             Form {
-                Section("订单") {
-                    TextField("标题", text: $draft.title, prompt: Text("例如：我的电脑订单"))
+                Section("事务") {
+                    Picker("类型", selection: $draft.kind) {
+                        ForEach(MatterKind.allCases) { Label($0.title, systemImage: $0.image).tag($0.rawValue) }
+                    }.disabled(editing || processingText)
+                        .help(editing ? "已有事务的类型保留不变；不同类型可新建事务。" : "选择要跟进的事务类型")
+                        .accessibilityIdentifier("matter-kind")
+                    TextField("标题", text: $draft.title, prompt: Text("为这份" + kind.title + "填写便于查找的标题"))
                         .accessibilityIdentifier("matter-title")
                     Picker("关联对象", selection: $draft.objectID) {
                         Text("不关联对象").tag(String?.none)
@@ -390,19 +436,19 @@ struct MatterEditorView: View {
                             Button("解除关联", systemImage: "xmark") { removeFile(id) }
                                 .labelStyle(.iconOnly).buttonStyle(.borderless)
                                 .help("仅解除凭证关联，保留原文件")
-                                .disabled(recognitionTask != nil)
+                                .disabled(processingText)
                         }
                     }
                     Button("添加已有凭证", systemImage: "link.badge.plus") { showFilePicker = true }
-                        .disabled(recognitionTask != nil)
+                        .disabled(processingText)
                     if !attachedFiles.isEmpty {
                         Picker("识别凭证", selection: $recognitionFileID) {
                             Text("选择一份凭证").tag(String?.none)
                             ForEach(attachedFiles) { Text($0.name).tag(Optional($0.id)) }
-                        }
+                        }.disabled(processingText)
                         HStack {
                             Button("识别并导入候选", systemImage: "text.viewfinder") { identify() }
-                                .disabled(recognitionFileID.flatMap { knownFiles[$0] } == nil || recognitionTask != nil)
+                                .disabled(recognitionFileID.flatMap { knownFiles[$0] } == nil || processingText)
                                 .accessibilityIdentifier("matter-recognize")
                             if recognitionTask != nil {
                                 ProgressView().controlSize(.small)
@@ -421,6 +467,7 @@ struct MatterEditorView: View {
                                     .textSelection(.enabled).font(.callout).padding(8)
                             }.frame(minHeight: 100, idealHeight: 150, maxHeight: 240).background(.background)
                         }
+                        recognizedTextActions
                     }
                 } header: {
                     Text("凭证与文字识别")
@@ -428,22 +475,31 @@ struct MatterEditorView: View {
                     Text("识别只在点击后进行。候选不会覆盖已确认字段，也不会自动变成提醒日期。")
                 }
                 Section {
-                    ForEach(OrderFields.keys, id: \.self) { key in
+                    ForEach(kind.fieldKeys, id: \.self) { key in
                         FactEditorRow(fact: factBinding(key), sourceName: sourceName(for: key))
                     }
                 } header: {
                     Text("关键事实")
                 } footer: {
-                    Text("日期请填写 YYYY-MM-DD。未知可留空；购买日期不能代替签收日期，也不会推断退货截止日。")
+                    Text("日期请填写 YYYY-MM-DD，未知可留空。这里只记录原文或手动确认的事实，不会推断退货、续约或取消截止日。")
+                }
+                if !extraFieldKeys.isEmpty {
+                    Section("其它已填字段") {
+                        ForEach(extraFieldKeys, id: \.self) { key in
+                            FactEditorRow(fact: factBinding(key), sourceName: sourceName(for: key))
+                        }
+                        Text("这些字段来自之前选择的类型，保留其内容供你核对；清空后不会保存。")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
                 }
                 Section {
-                    Toggle("为订单保存一个行动", isOn: $hasAction)
+                    Toggle("为这份" + kind.title + "保存一个行动", isOn: $hasAction)
                     if hasAction {
-                        TextField("行动", text: $action.title, prompt: Text("例如：核对退货条件"))
+                        TextField("行动", text: $action.title, prompt: Text(kind.defaultActionTitle))
                             .accessibilityIdentifier("action-title")
                         if finishedAction {
                             HStack {
-                                Text("当前状态：" + OrderFields.stateTitle(action.state)).foregroundStyle(.secondary)
+                                Text("当前状态：" + ActionLabels.stateTitle(action.state)).foregroundStyle(.secondary)
                                 Spacer()
                                 Button("重新启用行动") { action.state = action.dateConfirmed ? "active" : "needs_date" }
                             }
@@ -473,15 +529,15 @@ struct MatterEditorView: View {
                 if let message = model.errorMessage { Text(message).font(.callout).foregroundStyle(.orange) }
                 HStack {
                     Spacer()
-                    Button("取消") { dismiss() }.keyboardShortcut(.cancelAction).disabled(saving)
-                    Button(saving ? "正在保存…" : "保存订单") { save() }
+                    Button("取消") { dismiss() }.keyboardShortcut(.cancelAction).disabled(saving || savingText)
+                    Button(saving ? "正在保存…" : "保存" + kind.title) { save() }
                         .keyboardShortcut(.defaultAction).disabled(!canSave)
                         .accessibilityIdentifier("matter-save")
                 }
             }.padding(20)
         }
         .frame(minWidth: 600, idealWidth: 680, maxWidth: 900, minHeight: 540, idealHeight: 740, maxHeight: 1_000)
-        .interactiveDismissDisabled(saving)
+        .interactiveDismissDisabled(saving || savingText)
         .sheet(isPresented: $showFilePicker) {
             MatterFilePickerSheet { files in
                 for file in files {
@@ -501,12 +557,58 @@ struct MatterEditorView: View {
             } catch is CancellationError { }
             catch { recognitionError = "无法读取已有凭证。仍可手动填写，或重新添加凭证。" }
         }
-        .onDisappear { recognitionTask?.cancel(); recognitionTask = nil }
+        .onChange(of: draft.kind) { previous, current in
+            let newKind = MatterKind(rawValue: current) ?? .order
+            for key in newKind.fieldKeys where !draft.facts.contains(where: { $0.key == key }) {
+                draft.facts.append(FactDraft(key: key, valueType: MatterKind.valueType(for: key)))
+            }
+            if action.title == (MatterKind(rawValue: previous) ?? .order).defaultActionTitle {
+                action.title = newKind.defaultActionTitle
+            }
+        }
+        .onDisappear {
+            recognitionTask?.cancel(); recognitionTask = nil
+            assistantTask?.cancel(); assistantTask = nil
+        }
+    }
+
+    @ViewBuilder private var recognizedTextActions: some View {
+        if let result = recognition, let id = recognizedFileID, let file = knownFiles[id] {
+            VStack(alignment: .leading, spacing: 10) {
+                Text("以下操作针对：" + file.name).font(.caption).foregroundStyle(.secondary)
+                HStack {
+                    Button("用本机模型建议字段", systemImage: "text.badge.plus") { suggestWithLocalModel() }
+                        .disabled(!LocalFactAssistant.isAvailable || processingText)
+                        .accessibilityIdentifier("matter-local-model")
+                    if assistantTask != nil {
+                        ProgressView().controlSize(.small)
+                        Button("停止") { assistantTask?.cancel() }.buttonStyle(.link)
+                    }
+                }
+                Text(LocalFactAssistant.availabilityMessage()).font(.caption).foregroundStyle(.secondary)
+                Text("本机模型只查看识别原文的前 3500 个字符。结果均为候选，需逐项校对；已确认字段不会被覆盖。")
+                    .font(.caption).foregroundStyle(.secondary)
+                if let assistantError { Text(assistantError).font(.callout).foregroundStyle(.orange) }
+                Divider()
+                HStack {
+                    Button(savingText ? "正在保存正文…" : "保存此正文供全文搜索", systemImage: "doc.text.magnifyingglass") {
+                        saveText(file: file, text: result.text)
+                    }.disabled(processingText || textSaved)
+                        .accessibilityIdentifier("matter-save-document-text")
+                    if savingText { ProgressView().controlSize(.small) }
+                }
+                Text("默认不保存正文。此操作会把识别正文以明文保存在本机数据库，用于全文搜索；仅适合普通凭证，请勿用于密码、恢复码或其它秘密。")
+                    .font(.caption).foregroundStyle(.secondary)
+                if let textSaveMessage {
+                    Text(textSaveMessage).font(.caption).foregroundStyle(textSaved ? Color.secondary : Color.orange)
+                }
+            }.padding(.vertical, 6)
+        }
     }
 
     private func factBinding(_ key: String) -> Binding<FactDraft> {
         Binding(get: {
-            draft.facts.first(where: { $0.key == key }) ?? FactDraft(key: key, valueType: OrderFields.valueType(key))
+            draft.facts.first(where: { $0.key == key }) ?? FactDraft(key: key, valueType: MatterKind.valueType(for: key))
         }, set: { value in
             if let index = draft.facts.firstIndex(where: { $0.key == key }) { draft.facts[index] = value }
         })
@@ -520,42 +622,92 @@ struct MatterEditorView: View {
     private func removeFile(_ id: String) {
         draft.itemIDs.removeAll { $0 == id }
         if recognitionFileID == id { recognitionFileID = draft.itemIDs.first }
+        if recognizedFileID == id {
+            recognizedFileID = nil
+            recognition = nil
+            importMessage = nil
+            assistantError = nil
+            textSaved = false
+            textSaveMessage = nil
+        }
         // Facts retain their provenance; removing the visible link must not fabricate a new source.
     }
 
     private func identify() {
-        guard let id = recognitionFileID, let file = knownFiles[id], recognitionTask == nil else { return }
+        guard let id = recognitionFileID, let file = knownFiles[id], !processingText else { return }
         recognitionError = nil
         importMessage = nil
         recognition = nil
+        recognizedFileID = nil
+        assistantError = nil
+        textSaved = false
+        textSaveMessage = nil
         recognitionTask = Task {
             defer { recognitionTask = nil }
             do {
                 let result = try await model.extractText(from: file)
                 try Task.checkCancellation()
                 recognition = result
-                var imported = 0
-                var preserved = 0
-                for suggestion in result.suggestions where OrderFields.keys.contains(suggestion.key) {
-                    guard let index = draft.facts.firstIndex(where: { $0.key == suggestion.key }) else { continue }
-                    if draft.facts[index].state == "confirmed" { preserved += 1; continue }
-                    draft.facts[index].valueText = suggestion.valueText
-                    draft.facts[index].valueType = suggestion.valueType
-                    draft.facts[index].state = "candidate"
-                    draft.facts[index].sourceItemID = file.id
-                    draft.facts[index].sourceExcerpt = suggestion.sourceExcerpt
-                    draft.facts[index].origin = "ocr"
-                    imported += 1
-                }
-                if draft.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-                   let product = result.suggestions.first(where: { $0.key == "product" })?.valueText {
-                    draft.title = product + "订单"
-                }
-                importMessage = imported == 0
-                    ? "已显示识别原文，未导入新候选。请手动填写或校对已有字段。"
-                    : "已导入 \(imported) 个候选，请逐项校对。" + (preserved > 0 ? "\(preserved) 个已确认字段保持不变。" : "")
+                recognizedFileID = file.id
+                importCandidates(result.suggestions, from: file, origin: "ocr")
             } catch is CancellationError { }
             catch { recognitionError = error.localizedDescription }
+        }
+    }
+
+    private func suggestWithLocalModel() {
+        guard !processingText, LocalFactAssistant.isAvailable,
+              let result = recognition, let id = recognizedFileID, let file = knownFiles[id] else { return }
+        assistantError = nil
+        assistantTask = Task {
+            defer { assistantTask = nil }
+            do {
+                let suggestions = try await LocalFactAssistant.suggest(text: String(result.text.prefix(3_500)),
+                    fileName: file.name, allowedKeys: kind.fieldKeys)
+                try Task.checkCancellation()
+                importCandidates(suggestions, from: file, origin: "model")
+            } catch is CancellationError { }
+            catch { assistantError = error.localizedDescription }
+        }
+    }
+
+    private func importCandidates(_ suggestions: [DocumentFactSuggestion], from file: LibraryFile, origin: String) {
+        var imported = 0
+        var preserved = 0
+        for suggestion in suggestions where kind.fieldKeys.contains(suggestion.key) {
+            guard let index = draft.facts.firstIndex(where: { $0.key == suggestion.key }) else { continue }
+            if draft.facts[index].state == "confirmed" { preserved += 1; continue }
+            draft.facts[index].valueText = suggestion.valueText
+            draft.facts[index].valueType = MatterKind.valueType(for: suggestion.key)
+            draft.facts[index].state = "candidate"
+            draft.facts[index].sourceItemID = file.id
+            draft.facts[index].sourceExcerpt = suggestion.sourceExcerpt
+            draft.facts[index].origin = origin
+            imported += 1
+        }
+        let titleKey: String
+        switch kind {
+        case .order, .warranty: titleKey = "product"
+        case .contract: titleKey = "counterparty"
+        case .subscription: titleKey = "service"
+        }
+        if draft.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+           let title = suggestions.first(where: { $0.key == titleKey })?.valueText {
+            draft.title = title + kind.title
+        }
+        importMessage = imported == 0
+            ? "未导入新候选。请对照原文手动填写，或校对已有字段。"
+            : "已导入 \(imported) 个候选，请逐项校对。" + (preserved > 0 ? "\(preserved) 个已确认字段保持不变。" : "")
+    }
+
+    private func saveText(file: LibraryFile, text: String) {
+        guard !processingText, !textSaved else { return }
+        savingText = true
+        textSaveMessage = nil
+        Task {
+            textSaved = await model.saveDocumentText(file: file, text: text)
+            textSaveMessage = textSaved ? "此凭证的识别正文已保存，可在资料库中启用全文搜索。" : "正文未保存，请检查提示后重试。"
+            savingText = false
         }
     }
 
@@ -586,7 +738,7 @@ private struct FactEditorRow: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 7) {
             HStack(alignment: .firstTextBaseline, spacing: 12) {
-                TextField(OrderFields.title(fact.key), text: Binding(get: { fact.valueText }, set: {
+                TextField(MatterKind.title(for: fact.key), text: Binding(get: { fact.valueText }, set: {
                     guard fact.valueText != $0 else { return }
                     fact.valueText = $0
                     fact.origin = "user"
@@ -623,7 +775,7 @@ private struct MatterFilePickerSheet: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Text("添加订单凭证").font(.title2.bold())
+            Text("添加事务凭证").font(.title2.bold())
             HStack {
                 TextField("搜索名称或路径", text: $search)
                 Toggle("仅已托管", isOn: $managedOnly).toggleStyle(.checkbox)

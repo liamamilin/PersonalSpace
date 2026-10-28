@@ -104,6 +104,30 @@ final class LibraryDatabase: Sendable {
                 CREATE INDEX action_reminder ON action(state, remindAt);
                 """)
         }
+        migrator.registerMigration("M4-explicit-document-text") { db in
+            try db.execute(sql: """
+                CREATE TABLE document_text (
+                    itemID TEXT PRIMARY KEY NOT NULL REFERENCES item(id) ON DELETE CASCADE,
+                    bodyText TEXT NOT NULL,
+                    indexedAt DATETIME NOT NULL
+                );
+                CREATE VIRTUAL TABLE document_text_fts USING fts5(
+                    bodyText, content='document_text', content_rowid='rowid', tokenize='trigram'
+                );
+                CREATE TRIGGER document_text_insert AFTER INSERT ON document_text BEGIN
+                    INSERT INTO document_text_fts(rowid, bodyText) VALUES (new.rowid, new.bodyText);
+                END;
+                CREATE TRIGGER document_text_delete AFTER DELETE ON document_text BEGIN
+                    INSERT INTO document_text_fts(document_text_fts, rowid, bodyText)
+                    VALUES ('delete', old.rowid, old.bodyText);
+                END;
+                CREATE TRIGGER document_text_update AFTER UPDATE ON document_text BEGIN
+                    INSERT INTO document_text_fts(document_text_fts, rowid, bodyText)
+                    VALUES ('delete', old.rowid, old.bodyText);
+                    INSERT INTO document_text_fts(rowid, bodyText) VALUES (new.rowid, new.bodyText);
+                END;
+                """)
+        }
         try migrator.migrate(queue)
     }
 
@@ -210,11 +234,25 @@ final class LibraryDatabase: Sendable {
             }
             let words = query.search.split(whereSeparator: \.isWhitespace).map(String.init)
             for word in words {
-                let escaped = word.replacingOccurrences(of: "\\", with: "\\\\")
-                    .replacingOccurrences(of: "%", with: "\\%")
-                    .replacingOccurrences(of: "_", with: "\\_")
-                conditions.append("(i.name LIKE ? ESCAPE '\\' OR i.relativePath LIKE ? ESCAPE '\\' OR s.name LIKE ? ESCAPE '\\')")
+                let escaped = Self.escapedSearch(word)
+                var matches = ["i.name LIKE ? ESCAPE '\\'", "i.relativePath LIKE ? ESCAPE '\\'", "s.name LIKE ? ESCAPE '\\'"]
                 arguments += ["%\(escaped)%", "%\(escaped)%", "%\(escaped)%"]
+                if query.searchBody {
+                    if word.count < 3 {
+                        // Trigram cannot match 1–2 characters; keep short Chinese queries useful.
+                        matches.append("EXISTS (SELECT 1 FROM document_text dt WHERE dt.itemID=i.id AND dt.bodyText LIKE ? ESCAPE '\\')")
+                        arguments += ["%\(escaped)%"]
+                    } else {
+                        matches.append("""
+                            i.id IN (SELECT dt.itemID FROM document_text dt
+                                JOIN document_text_fts ON document_text_fts.rowid=dt.rowid
+                                WHERE document_text_fts MATCH ?)
+                            """)
+                        // Quote the entire token so user text is never treated as FTS operators.
+                        arguments += ["\"" + word.replacingOccurrences(of: "\"", with: "\"\"") + "\""]
+                    }
+                }
+                conditions.append("(" + matches.joined(separator: " OR ") + ")")
             }
             let from = "FROM item i JOIN source s ON s.id=i.sourceID WHERE " + conditions.joined(separator: " AND ")
             let total = try Int.fetchOne(db, sql: "SELECT COUNT(*) " + from, arguments: arguments) ?? 0
@@ -319,6 +357,38 @@ final class LibraryDatabase: Sendable {
         }
     }
 
+    // Called only after the user explicitly allows indexing the selected document's text.
+    func saveDocumentText(itemID: String, text: String) async throws {
+        guard text.count <= 200_000 else { throw LibraryDataError.documentTextTooLong }
+        guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw LibraryDataError.emptyDocumentText
+        }
+        try await queue.write { db in
+            guard let name = try String.fetchOne(db, sql: "SELECT name FROM item WHERE id=?", arguments: [itemID]) else {
+                throw LibraryDataError.documentNotFound
+            }
+            guard !DocumentTextExtractor.isPotentiallySensitive(name: name) else {
+                throw LibraryDataError.sensitiveDocument
+            }
+            try db.execute(sql: """
+                INSERT INTO document_text(itemID, bodyText, indexedAt) VALUES (?, ?, ?)
+                ON CONFLICT(itemID) DO UPDATE SET bodyText=excluded.bodyText, indexedAt=excluded.indexedAt
+                """, arguments: [itemID, text, Date()])
+        }
+    }
+
+    func deleteDocumentText(itemID: String) async throws {
+        try await queue.write { db in
+            try db.execute(sql: "DELETE FROM document_text WHERE itemID=?", arguments: [itemID])
+        }
+    }
+
+    func documentText(itemID: String) async throws -> String? {
+        try await queue.read { db in
+            try String.fetchOne(db, sql: "SELECT bodyText FROM document_text WHERE itemID=?", arguments: [itemID])
+        }
+    }
+
     func matters(search: String = "") async throws -> [MatterRecord] {
         try await queue.read { db in
             var conditions = ["1=1"]
@@ -381,7 +451,7 @@ final class LibraryDatabase: Sendable {
             cleaned.valueText = fact.valueText.trimmingCharacters(in: .whitespacesAndNewlines)
             return cleaned.valueText.isEmpty ? nil : cleaned
         }
-        guard !draft.id.isEmpty, !title.isEmpty, draft.kind == "order",
+        guard !draft.id.isEmpty, !title.isEmpty, ["order", "contract", "warranty", "subscription"].contains(draft.kind),
               ["active", "completed"].contains(draft.status),
               facts.allSatisfy({ !$0.id.isEmpty && !$0.key.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                   && ["text", "date", "amount"].contains($0.valueType)
@@ -494,6 +564,7 @@ final class LibraryDatabase: Sendable {
         i.id, i.sourceID, i.relativePath, i.name, i.typeIdentifier, i.bytes,
         i.modifiedAt, i.createdAt, (i.isAvailable AND s.isEnabled) AS isAvailable,
         i.managedCopyPath, i.managedSHA256, i.managedAt,
+        (SELECT dt.indexedAt FROM document_text dt WHERE dt.itemID=i.id) AS textIndexedAt,
         s.name AS sourceName, s.path AS sourcePath,
         CASE WHEN s.isEnabled=0 THEN '已停止管理此来源，请重新添加文件夹恢复原件访问。'
              ELSE s.lastError END AS sourceError
@@ -508,14 +579,19 @@ final class LibraryDatabase: Sendable {
 
 private enum LibraryDataError: LocalizedError {
     case invalidObject, invalidManagedCopy, managedCopyNotSaved, invalidMatter, invalidAction
+    case documentTextTooLong, emptyDocumentText, documentNotFound, sensitiveDocument
 
     var errorDescription: String? {
         switch self {
         case .invalidObject: "请填写对象名称，并选择设备或其它类型。"
         case .invalidManagedCopy: "托管副本路径或校验信息无效。"
         case .managedCopyNotSaved: "资料不存在或已有托管副本，本次副本未保存。"
-        case .invalidMatter: "请填写订单标题，并检查事实字段和来源信息。"
+        case .invalidMatter: "请填写事务标题，并检查事实字段和来源信息。"
         case .invalidAction: "行动资料无效，请填写标题并确认具体提醒时间。"
+        case .documentTextTooLong: "正文超过 200,000 字符，未保存索引。请拆分文档后重试。"
+        case .emptyDocumentText: "没有可保存的正文。"
+        case .documentNotFound: "资料记录已不可用，未保存正文索引。"
+        case .sensitiveDocument: "文件名疑似包含密码、恢复码或账号资料，不能保存到普通正文索引。"
         }
     }
 }

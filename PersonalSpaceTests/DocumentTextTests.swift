@@ -93,4 +93,77 @@ final class DocumentTextTests: XCTestCase {
         }
         XCTAssertFalse(DocumentTextExtractor.isPotentiallySensitive(name: "订单识别样例.png"))
     }
+
+    func testContractWarrantyAndSubscriptionPDFsExtractOnlyExplicitFields() async throws {
+        let root = try workspace()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let cases: [(lines: [String], expected: [String: String])] = [
+            (["合成合同，仅用于开发测试", "合同相对方：演示房屋服务", "合同编号：DEMO-C-001",
+              "生效日期：2026年11月1日", "合同到期日期：2027-10-31", "合同金额：CNY 2400.00",
+              "续约条款：双方书面确认后续约。", "取消条款：至少提前 30 日书面通知。"],
+             ["counterparty": "演示房屋服务", "contract_number": "DEMO-C-001", "start_date": "2026-11-01",
+              "end_date": "2027-10-31", "amount": "CNY 2400.00", "renewal_terms": "双方书面确认后续约。",
+              "cancellation_terms": "至少提前 30 日书面通知。"]),
+            (["合成保修凭证，仅用于开发测试", "商品名称：测试耳机", "购买日期：2026-10-20",
+              "保修到期日期：2028-10-20", "保修条款：凭购买凭证享受演示维修服务。"],
+             ["product": "测试耳机", "purchase_date": "2026-10-20", "warranty_end_date": "2028-10-20",
+              "warranty_terms": "凭购买凭证享受演示维修服务。"]),
+            (["合成订阅凭证，仅用于开发测试", "服务名称：演示云笔记", "服务商：演示软件",
+              "下次扣费日期：2026-11-20", "订阅金额：CNY 29.00", "续订条款：每月续订，可在下次扣费前取消。",
+              "取消条款：在服务设置中取消自动续订。"],
+             ["service": "演示云笔记", "provider": "演示软件", "next_billing_date": "2026-11-20",
+              "amount": "CNY 29.00", "renewal_terms": "每月续订，可在下次扣费前取消。",
+              "cancellation_terms": "在服务设置中取消自动续订。"])
+        ]
+        for sample in cases {
+            let url = try makePDF(lines: sample.lines, in: root)
+            let result = try await Task.detached { try DocumentTextExtractor.extract(from: url) }.value
+            XCTAssertEqual(Dictionary(uniqueKeysWithValues: result.suggestions.map { ($0.key, $0.valueText) }), sample.expected)
+            XCTAssertTrue(result.suggestions.allSatisfy { result.text.contains($0.sourceExcerpt) })
+        }
+    }
+
+    func testPlainTextAndBOMUTF16MarkdownUseSameExplicitFieldPath() async throws {
+        let root = try workspace()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let content = "合成文本合同\n合同相对方：演示房屋服务\n合同编号：DEMO-TEXT-001\n生效日期：2026-11-01\n保修条款：自购买日起两年。\n"
+        let textURL = root.appendingPathComponent("合同.txt")
+        let markdownURL = root.appendingPathComponent("合同.md")
+        let utf8 = Data(content.utf8)
+        let utf16 = Data([0xFF, 0xFE]) + (try XCTUnwrap(content.data(using: .utf16LittleEndian)))
+        try utf8.write(to: textURL)
+        try utf16.write(to: markdownURL)
+
+        for url in [textURL, markdownURL] {
+            let result = try await Task.detached { try DocumentTextExtractor.extract(from: url) }.value
+            XCTAssertEqual(result.text, content)
+            XCTAssertEqual(result.suggestions.first { $0.key == "contract_number" }?.valueText, "DEMO-TEXT-001")
+            XCTAssertEqual(result.suggestions.first { $0.key == "start_date" }?.valueText, "2026-11-01")
+            XCTAssertFalse(result.suggestions.contains { $0.key == "warranty_end_date" })
+        }
+        XCTAssertEqual(try Data(contentsOf: textURL), utf8)
+        XCTAssertEqual(try Data(contentsOf: markdownURL), utf16)
+    }
+
+    func testOversizedPlainTextReturnsClearFailureInsteadOfPartialResult() throws {
+        let root = try workspace()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let tooManyCharacters = root.appendingPathComponent("字符过多.txt")
+        let tooManyBytes = root.appendingPathComponent("字节过多.md")
+        try Data(String(repeating: "a", count: 200_001).utf8).write(to: tooManyCharacters)
+        try Data(repeating: 0x61, count: 1_048_577).write(to: tooManyBytes)
+        for url in [tooManyCharacters, tooManyBytes] {
+            XCTAssertThrowsError(try DocumentTextExtractor.extract(from: url)) { error in
+                XCTAssertTrue(error.localizedDescription.contains("超出限制"))
+            }
+        }
+    }
+
+    func testStrictDateNormalizationRejectsMalformedSuffixAndImpossibleDates() {
+        XCTAssertEqual(DocumentTextExtractor.normalizingExplicitDate("2024年2月29日"), "2024-02-29")
+        XCTAssertEqual(DocumentTextExtractor.normalizingExplicitDate("2026-10-20 09:30"), "2026-10-20")
+        for value in ["2026-02-29", "2026-10-20-99", "2026-10-20abc", "10月20日", "2026-10-20 29:30"] {
+            XCTAssertNil(DocumentTextExtractor.normalizingExplicitDate(value))
+        }
+    }
 }
