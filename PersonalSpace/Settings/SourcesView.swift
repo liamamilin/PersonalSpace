@@ -9,7 +9,7 @@ struct SourcesView: View {
             HStack {
                 VStack(alignment: .leading, spacing: 5) {
                     Text("已授权来源").font(.title2.bold())
-                    Text("文件保留在原位置，仅在这台 Mac 上建立索引。")
+                    Text("应用运行时自动更新已授权文件夹；原文件保留在原位置。")
                         .font(.callout).foregroundStyle(.secondary)
                 }
                 Spacer()
@@ -39,6 +39,11 @@ struct SourcesView: View {
                         } else {
                             Text(source.lastScannedAt.map { "上次扫描：" + $0.formatted(date: .abbreviated, time: .shortened) } ?? "尚未完成扫描")
                                 .font(.caption).foregroundStyle(.secondary)
+                        }
+                        if let error = model.monitoringErrors[source.id] {
+                            Label(error, systemImage: "exclamationmark.triangle").font(.caption).foregroundStyle(.orange)
+                        } else if model.monitoredSourceIDs.contains(source.id) {
+                            Label("自动更新已开启", systemImage: "arrow.triangle.2.circlepath").font(.caption).foregroundStyle(.secondary)
                         }
                         HStack {
                             if model.scanning[source.id] != nil {

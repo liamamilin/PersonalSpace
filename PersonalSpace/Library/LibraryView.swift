@@ -126,7 +126,8 @@ struct LibraryView: View {
                     }.padding(16)
                     Divider()
                 }
-                if let source = model.sources.first(where: { $0.id == model.selectedSourceID }), let error = source.lastError {
+                if let source = model.sources.first(where: { $0.id == model.selectedSourceID }),
+                   let error = source.lastError ?? model.monitoringErrors[source.id] {
                     HStack {
                         Label(error, systemImage: "exclamationmark.triangle").font(.callout)
                         Spacer()
@@ -233,13 +234,13 @@ struct LibraryView: View {
                     if compactWindow { showCompactInspector.toggle() }
                     else { showInspector.toggle() }
                 }
-                    .popover(isPresented: $showCompactInspector) {
-                        inspectorContent.frame(width: 360, height: 540)
-                    }
                     .help("显示或隐藏文件详情")
             }
         }
         .frame(minWidth: 720, minHeight: 500)
+        .popover(isPresented: $showCompactInspector) {
+            inspectorContent.frame(width: 360, height: 540)
+        }
         .onGeometryChange(for: Bool.self, of: { $0.size.width < 1_000 }) { compact in
             compactWindow = compact
             if !compact { showCompactInspector = false }
