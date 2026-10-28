@@ -1,0 +1,9 @@
+Final build: ** BUILD SUCCEEDED **
+Test Case '-[PersonalSpaceTests.LibraryTests testFailedScanDoesNotMarkPreviousFilesMissing]' passed (0.047 seconds).
+Test Case '-[PersonalSpaceTests.LibraryTests testLiteralSearchPathSearchSortingAndPagination]' passed (0.014 seconds).
+Test Case '-[PersonalSpaceTests.LibraryTests testMovedFileRemainsUnavailableAndReturnsWithSameID]' passed (0.004 seconds).
+Test Case '-[PersonalSpaceTests.LibraryTests testRemovingSourceOnlyRemovesIndex]' passed (0.003 seconds).
+Test Case '-[PersonalSpaceTests.LibraryTests testSkipsPackagesAndSymlinksWithoutChangingOriginals]' passed (0.004 seconds).
+Test Case '-[PersonalSpaceTests.LibraryTests testTwoSourcesSearchFilterAndPersistence]' passed (0.009 seconds).
+Executed 6 tests, with 0 failures (0 unexpected) in 0.080 (0.081) seconds
+** TEST SUCCEEDED **

@@ -1,0 +1,15 @@
+[
+  {"id":"M1-01","stage":"M1","case":"two_folders_search_open","expected":"both_locations_searchable_and_openable"},
+  {"id":"M1-02","stage":"M1","case":"restart_after_scanning","expected":"sources_and_items_persist"},
+  {"id":"M1-03","stage":"M1","case":"test_file_moved_after_scan","expected":"missing_status_no_user_file_deletion"},
+  {"id":"M1-04","stage":"M1","case":"symlink_outside_authorized_folder","expected":"not_traversed"},
+  {"id":"M2-01","stage":"M2","case":"two_evidence_files_one_object","expected":"links_persist"},
+  {"id":"M2-02","stage":"M2","case":"managed_copy_after_test_source_removed","expected":"archived_copy_still_opens"},
+  {"id":"M3-01","stage":"M3","case":"order_image_ocr_review","expected":"editable_fact_candidate_with_evidence"},
+  {"id":"M3-02","stage":"M3","case":"return_policy_without_delivery_date","expected":"deadline_needs_user_confirmation"},
+  {"id":"M3-03","stage":"M3","case":"reminder_date_changed","expected":"old_pending_notification_removed"},
+  {"id":"M4-01","stage":"M4","case":"all_four_matter_types","expected":"shared_fact_action_flow"},
+  {"id":"M5-01","stage":"M5","case":"sensitive_password_filename_sample","expected":"body_not_in_fts_or_logs"},
+  {"id":"M6-01","stage":"M6","case":"restore_managed_copy_into_empty_test_store","expected":"file_accessible_after_restore"},
+  {"id":"M6-02","stage":"M6","case":"corrupt_backup_rejected","expected":"active_store_unchanged"}
+]

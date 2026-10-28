@@ -1,0 +1,15 @@
+.DS_Store
+.build/
+DerivedData/
+*.xcuserstate
+xcuserdata/
+PersonalSpace-DevPack-v1.1/
+PersonalSpace-DevPack-v1.1.zip
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+evidence/*.xcresult/
+evidence/*.log
+
+evidence/03-finder.png
+evidence/test-summary.json
