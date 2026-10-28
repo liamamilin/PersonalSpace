@@ -1,0 +1,89 @@
+# PersonalSpace — 原生 macOS 个人数字空间
+
+**开发规格 v1.1（能力优先版）｜2026-10-28**
+
+> M1 已实现：原生 SwiftUI 资料库、用户授权文件夹、只读扫描、本地 SQLite/GRDB 索引、搜索、系统预览、打开和 Finder 定位。后续章节保留原始产品规格，尚未实现的阶段不出现在应用中。
+
+## 运行 M1
+
+需要 macOS 26+；本轮使用 Xcode 27.1（Swift 6.4、macOS 27 SDK）构建，部署目标为 macOS 26。打开根目录的 `PersonalSpace.xcodeproj`，选择 `PersonalSpace` scheme 后运行。Debug 使用本机 ad hoc 签名，App Sandbox 始终开启；首次构建需要从官方仓库下载固定版本 GRDB 7.11.1。
+
+```bash
+xcodebuild -project PersonalSpace.xcodeproj -scheme PersonalSpace \
+  -configuration Debug -destination 'platform=macOS' \
+  -derivedDataPath .build/DerivedData \
+  -clonedSourcePackagesDirPath .build/SourcePackages build
+xcodebuild -project PersonalSpace.xcodeproj -scheme PersonalSpace \
+  -configuration Debug -destination 'platform=macOS' \
+  -derivedDataPath .build/DerivedData \
+  -clonedSourcePackagesDirPath .build/SourcePackages test
+```
+
+XCTest 会临时重签宿主应用；测试后请再次执行上面的 `build` 命令，恢复普通沙盒签名后再做手工验收。
+
+在 Finder 打开 `.build/DerivedData/Build/Products/Debug/PersonalSpace.app`，或直接用 Xcode Run。此为本地开发构建，未做 Developer ID 签名、公证和发行打包。
+
+### 2 分钟演示
+
+1. 启动时没有演示数据，点击「添加文件夹」，依次选择 `fixtures/M1/A` 和 `fixtures/M1/B`。这些是明确标记的合成测试文件，应用不会自动导入。
+2. 按 `⌘F` 搜「订单」，选择 PDF，右侧显示真实系统预览；点「系统预览」或按空格放大，点「在 Finder 中显示」定位原件，点「打开原件」使用默认应用。
+3. 搜「合同」，看到 B 中的 `租赁合同.txt`；可点侧栏按来源筛选，点表头或工具栏排序菜单排序。
+4. `⌘Q` 退出后重新打开，来源与索引仍在，启动自动补扫。`⌘,` 打开来源设置，可刷新、停止扫描、重新授权和移除来源。
+5. 仅把 `fixtures/M1/A/订单样例.pdf` 移到 A 外的测试位置，刷新 A：旧记录保留并显示不可用。放回后刷新，恢复同一条记录。不要用个人原件做移动测试。
+
+数据库位于应用沙盒的 `Application Support/PersonalSpace/Library.sqlite`。只保存来源书签、文件名、类型、大小、日期和相对路径，不读正文索引、不联网、不移动或修改原件。默认跳过隐藏文件、目录包及所有符号链接。失败或停止的扫描保留原有可用状态。一次显示 500 个查询结果，可点底部「显示更多」。
+
+实现入口：`PersonalSpace/App/PersonalSpaceApp.swift`；界面与扫描在 `PersonalSpace/Library`；唯一数据层在 `PersonalSpace/Data`；来源设置在 `PersonalSpace/Settings`。测试位于 `PersonalSpaceTests/LibraryTests.swift`。
+
+## 一句话定义
+
+PersonalSpace 让用户从 Mac 上散落的文件和照片中，**找到资料、组织个人对象、关联事务、采取行动**。它是个人数字空间的统一入口，而不是 Finder、Photos 或 Passwords 的克隆。
+
+## 先读什么
+
+1. [00-DELIVERY-FIRST](docs/00-DELIVERY-FIRST.md)：本版本最重要的执行原则与优先级（先读）。
+2. [AGENTS.md](AGENTS.md)：Codex 在本仓库的工作方式。
+3. [01-PRODUCT](docs/01-PRODUCT.md)：为什么做、用户需要什么、具体做什么。
+4. [02-EXPERIENCE](docs/02-EXPERIENCE.md)：完整产品页面与真实交互。
+5. [03-DESIGN-SYSTEM](docs/03-DESIGN-SYSTEM.md)：专业 Mac 产品的视觉与行为标准。
+6. [04-ARCHITECTURE](docs/04-ARCHITECTURE.md)：技术选型与最简实现路径。
+7. [05-DATA-SPEC](docs/05-DATA-SPEC.md)：按功能逐步扩展的数据结构。
+8. [06-PRIVACY-SECURITY](docs/06-PRIVACY-SECURITY.md)：必要安全底线，不搞过度防御。
+9. [07-IMPLEMENTATION](docs/07-IMPLEMENTATION.md)：M1–M6 的功能交付与验收。
+10. [08-QUALITY-ACCEPTANCE](docs/08-QUALITY-ACCEPTANCE.md)：少量关键测试和发布验收。
+11. [09-DECISIONS-REFERENCES](docs/09-DECISIONS-REFERENCES.md)：已定决策与 SDK 参考。
+12. [CODEX_START](CODEX_START.md)：直接交给 Codex 的首次开发任务；后续见 [CODEX_PHASE_PROMPTS](CODEX_PHASE_PROMPTS.md)。
+
+## 核心模型
+
+```text
+来源（Source）
+  └─ 资料（Item：文件/照片/归档副本）
+      ├─ 关联个人对象（Object：设备、房屋、个人档案…）
+      └─ 支撑事务（Matter：订单、合同、保修、订阅）
+          ├─ 事实（Fact：购买日期、条款…）
+          └─ 行动（Action：续订前检查、到期提醒…）
+```
+
+用户不需要理解这些开发术语。应用中的主导航是「概览、资料库、个人对象、事务、待办」。未实现的页面暂时不露出无效按钮。
+
+## 六个可验收里程碑
+
+| 里程碑 | 真正交付给用户的能力 | 一句话验收 |
+|---|---|---|
+| **M1** 先找得到 | 添加文件夹、扫描、按名称搜索、预览、Finder 定位、重启保留 | 找回两个不同文件夹中的真实文件 |
+| **M2** 再整理起来 | 创建个人对象、关联资料、手动托管重要凭证 | 一个设备关联两份凭证，归档副本可用 |
+| **M3** 开始跟进 | 一张订单 → OCR/手动校对 → 确认日期 → 系统提醒 | 真实的订单提醒能建立、修改、取消 |
+| **M4** 扩展价值 | 四类事务、按需全文搜索、可用时的本地模型辅助 | 合同/保修/订阅沿用同一业务路径 |
+| **M5** 覆盖个人空间 | Photos 只读关联、敏感文件标记 | 照片可关联；密码样本不进入普通文本索引 |
+| **M6** 可长期使用 | 备份恢复、性能、原生 UI、可访问性与分发 | 可恢复一份托管凭证；打包可在 Mac 运行 |
+
+第一轮 **只做 M1，不做 M1 之后的空架构**。后续根据真实用户路径完成下一个能力。
+
+## 非目标
+
+不用 Electron / Tauri / WebView 做主界面；不做云服务、账号、跨端同步、全盘无授权扫描、自动移动删除原件、密码保险箱、通用 Agent 平台。Foundation Models 是可选增强，不得成为手动流程的前提。
+
+## 成功的判定
+
+不是创建多少文件、多少协议、多少状态或多少测试，而是用户能否**在真正运行的 Mac 应用里完成事情**。构建与验收结论只能根据实际运行得出；无法在当前环境执行时写「未验证」，不可声称已完成。
