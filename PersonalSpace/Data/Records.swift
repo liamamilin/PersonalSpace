@@ -22,6 +22,76 @@ struct PersonalObject: Decodable, FetchableRecord, Identifiable, Sendable, Equat
     var itemCount: Int
 }
 
+struct MatterRecord: Decodable, FetchableRecord, Identifiable, Sendable, Equatable {
+    var id: String
+    var kind: String
+    var title: String
+    var status: String
+    var objectID: String?
+    var notes: String
+    var createdAt: Date
+    var updatedAt: Date
+    var itemCount: Int
+}
+
+struct FactRecord: Decodable, FetchableRecord, Identifiable, Sendable, Equatable {
+    var id: String
+    var matterID: String
+    var key: String
+    var valueText: String
+    var valueType: String
+    var state: String
+    var sourceItemID: String?
+    var sourceExcerpt: String?
+    var origin: String
+}
+
+struct ActionRecord: Decodable, FetchableRecord, Identifiable, Sendable, Equatable {
+    var id: String
+    var matterID: String?
+    var title: String
+    var dueDate: Date?
+    var remindAt: Date?
+    var state: String
+    var dateConfirmed: Bool
+    var createdAt: Date
+    var updatedAt: Date
+    var matterTitle: String?
+}
+
+// These drafts are the concrete order editor's input to one database transaction.
+struct MatterDraft: Sendable {
+    var id = UUID().uuidString
+    var kind = "order"
+    var title = ""
+    var status = "active"
+    var objectID: String? = nil
+    var notes = ""
+    var itemIDs: [String] = []
+    var facts: [FactDraft] = []
+    var action: ActionDraft? = nil
+}
+
+struct FactDraft: Identifiable, Sendable, Equatable {
+    var id = UUID().uuidString
+    var key = ""
+    var valueText = ""
+    var valueType = "text"
+    var state = "candidate"
+    var sourceItemID: String? = nil
+    var sourceExcerpt: String? = nil
+    var origin = "user"
+}
+
+struct ActionDraft: Identifiable, Sendable, Equatable {
+    var id = UUID().uuidString
+    var title = ""
+    var dueDate: Date? = nil
+    var remindAt: Date? = nil
+    var state = "needs_date"
+    var dateConfirmed = false
+}
+
 struct LibraryFile: Decodable, FetchableRecord, Identifiable, Sendable, Equatable {
     var id: String
     var sourceID: String
@@ -81,6 +151,7 @@ struct FileQuery: Sendable {
     var search = ""
     var sourceID: String?
     var objectID: String? = nil
+    var matterID: String? = nil
     var managedOnly = false
     var sort: FileSort = .name
     var ascending = true

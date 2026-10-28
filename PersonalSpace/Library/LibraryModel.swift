@@ -3,6 +3,19 @@ import SwiftUI
 
 @MainActor
 final class LibraryModel: ObservableObject {
+    @Published var matters: [MatterRecord] = []
+    @Published var actions: [ActionRecord] = []
+    @Published var selectedMatterID: String?
+    @Published var selectedActionID: String?
+    @Published var matterFacts: [FactRecord] = []
+    @Published var matterFiles: [LibraryFile] = []
+    @Published var pendingActionIDs: Set<String> = []
+    @Published var deliveredActionIDs: Set<String> = []
+    @Published var reminderMessage: String?
+    @Published var showMatterEditor = false
+    @Published var matterDraft = MatterDraft()
+    let reminders = ReminderController()
+    var openLibraryWindow: (() -> Void)?
     @Published var objects: [PersonalObject] = []
     @Published var selectedObjectID: String?
     @Published var linkedObjects: [PersonalObject] = []
@@ -40,6 +53,10 @@ final class LibraryModel: ObservableObject {
     private var queryGeneration = 0
 
     var selectedFile: LibraryFile? { files.first { $0.id == selectedFileID } }
+    var selectedMatter: MatterRecord? { matters.first { $0.id == selectedMatterID } }
+    var isMattersList: Bool { selectedSourceID == "matters" }
+    var isActionsList: Bool { selectedSourceID == "actions" }
+    var isFileList: Bool { !isObjectsList && !isMattersList && !isActionsList }
     var currentObjectID: String? {
         selectedSourceID.hasPrefix("object:") ? String(selectedSourceID.dropFirst(7)) : nil
     }
@@ -48,15 +65,18 @@ final class LibraryModel: ObservableObject {
         objects.first { $0.id == (currentObjectID ?? selectedObjectID) }
     }
     var query: FileQuery {
-        let isSource = !["all", "objects", "managed"].contains(selectedSourceID) && currentObjectID == nil
+        let isSource = !["all", "objects", "managed", "matters", "actions"].contains(selectedSourceID) && currentObjectID == nil
         return FileQuery(search: isObjectsList ? "" : search, sourceID: isSource ? selectedSourceID : nil,
             objectID: currentObjectID, managedOnly: selectedSourceID == "managed",
             sort: sort, ascending: ascending, limit: limit)
     }
     var isScanning: Bool { !scanning.isEmpty }
 
-    init() {
-        do { database = try LibraryDatabase.applicationDatabase() }
+    init(database suppliedDatabase: LibraryDatabase? = nil) {
+        do {
+            if let suppliedDatabase { database = suppliedDatabase }
+            else { database = try LibraryDatabase.applicationDatabase() }
+        }
         catch {
             database = nil
             storageUnavailable = true
@@ -64,12 +84,19 @@ final class LibraryModel: ObservableObject {
         }
         do { managedStore = try ManagedFileStore.applicationStore() }
         catch { errorMessage = "托管目录无法访问，文件搜索仍可使用。" }
+        reminders.onOpenAction = { [weak self] id in
+            guard let self else { return }
+            self.openLibraryWindow?()
+            NSApp.activate(ignoringOtherApps: true)
+            Task { await self.openAction(id) }
+        }
     }
 
     func start() async {
         guard !started else { return }
         started = true
         await reload()
+        await refreshReminderStatus()
         for source in sources { refresh(source) }
     }
 
@@ -81,16 +108,24 @@ final class LibraryModel: ObservableObject {
         do {
             let newSources = try await database.sources()
             let newObjects = try await database.objects()
+            let newMatters = try await database.matters()
+            let newActions = try await database.actions()
             let result = try await database.files(request)
             guard generation == queryGeneration, !Task.isCancelled else { return }
             sources = newSources
             objects = newObjects
+            matters = newMatters
+            actions = newActions
             files = result.files
             total = result.total
             if let id = selectedFileID, !files.contains(where: { $0.id == id }) {
                 selectedFileID = nil
             }
-        } catch { errorMessage = "读取资料库失败，请重试。" }
+        } catch {
+            // A SwiftUI search/navigation task may be superseded during an async GRDB read.
+            guard generation == queryGeneration, !Task.isCancelled else { return }
+            errorMessage = "读取资料库失败，请重试。"
+        }
     }
 
     func addFolders(replacing source: FolderSource? = nil) {
@@ -380,5 +415,162 @@ final class LibraryModel: ObservableObject {
         } catch {
             errorMessage = "未能保存托管副本。请检查原文件权限和磁盘空间后重试，原件保持不变。"
         }
+    }
+
+    func createOrder() {
+        errorMessage = nil
+        matterDraft = MatterDraft()
+        if let file = selectedFile, isFileList { matterDraft.itemIDs = [file.id] }
+        if let objectID = currentObjectID { matterDraft.objectID = objectID }
+        showMatterEditor = true
+    }
+
+    func editMatter(_ matter: MatterRecord) async {
+        guard let database else { return }
+        do {
+            let facts = try await database.facts(matterID: matter.id)
+            let files = try await database.files(FileQuery(matterID: matter.id, limit: Int.max)).files
+            let actions = try await database.actions(matterID: matter.id)
+            var draft = MatterDraft(id: matter.id, kind: matter.kind, title: matter.title,
+                status: matter.status, objectID: matter.objectID, notes: matter.notes,
+                itemIDs: files.map(\.id))
+            draft.facts = facts.map {
+                FactDraft(id: $0.id, key: $0.key, valueText: $0.valueText, valueType: $0.valueType,
+                    state: $0.state, sourceItemID: $0.sourceItemID,
+                    sourceExcerpt: $0.sourceExcerpt, origin: $0.origin)
+            }
+            if let action = actions.first {
+                draft.action = ActionDraft(id: action.id, title: action.title, dueDate: action.dueDate,
+                    remindAt: action.remindAt, state: action.state, dateConfirmed: action.dateConfirmed)
+            }
+            matterDraft = draft
+            showMatterEditor = true
+        } catch { errorMessage = "无法读取订单，请重试。" }
+    }
+
+    func showMatter(_ id: String) async {
+        search = ""
+        selectedFileID = nil
+        selectedSourceID = "matters"
+        selectedMatterID = id
+        await loadMatterDetails()
+    }
+
+    private func openAction(_ id: String) async {
+        guard let database else { return }
+        do {
+            guard let action = try await database.action(id: id) else {
+                errorMessage = "此提醒对应的行动已不存在。"
+                return
+            }
+            selectedActionID = id
+            if let matterID = action.matterID { await showMatter(matterID) }
+            else { selectedSourceID = "actions"; await reload() }
+        } catch { errorMessage = "无法打开提醒对应的行动，请在待办中查看。" }
+    }
+
+    func loadMatterDetails() async {
+        guard let database, let id = selectedMatterID else {
+            matterFacts = []; matterFiles = []
+            return
+        }
+        do {
+            let facts = try await database.facts(matterID: id)
+            let files = try await database.files(FileQuery(matterID: id, limit: Int.max)).files
+            guard selectedMatterID == id, !Task.isCancelled else { return }
+            matterFacts = facts
+            matterFiles = files
+        } catch {
+            guard selectedMatterID == id, !Task.isCancelled else { return }
+            errorMessage = "读取事务详情失败，请重试。"
+        }
+    }
+
+    func saveMatter(_ draft: MatterDraft) async -> Bool {
+        guard let database else { return false }
+        if let action = draft.action, action.dateConfirmed,
+           !["done", "cancelled"].contains(action.state),
+           action.remindAt.map({ $0 <= Date() }) != false {
+            errorMessage = "请为已确认的提醒选择一个未来时间。"
+            return false
+        }
+        do {
+            let previous = try await database.actions(matterID: draft.id)
+            let saved = try await database.saveMatter(draft)
+            // Only a successful database save may replace or cancel a system request.
+            for action in previous where action.id != saved?.id {
+                _ = await reminders.apply(actionID: action.id, title: action.title,
+                    remindAt: nil, dateConfirmed: false, state: "cancelled")
+            }
+            if let saved {
+                reminderMessage = await reminders.apply(actionID: saved.id, title: saved.title,
+                    remindAt: saved.remindAt, dateConfirmed: saved.dateConfirmed, state: saved.state).message
+            } else { reminderMessage = previous.isEmpty ? "订单已保存。" : "订单已保存，原系统提醒已取消。" }
+            await reload()
+            await showMatter(draft.id)
+            await refreshReminderStatus(updateMessage: false)
+            return true
+        } catch {
+            errorMessage = (error as? LocalizedError)?.errorDescription ?? "保存订单失败，请检查字段后重试。"
+            return false
+        }
+    }
+
+    func setActionState(_ action: ActionRecord, state: String) async {
+        guard let database else { return }
+        do {
+            try await database.setActionState(id: action.id, state: state)
+            if let saved = try await database.action(id: action.id) {
+                reminderMessage = await reminders.apply(actionID: saved.id, title: saved.title,
+                    remindAt: saved.remindAt, dateConfirmed: saved.dateConfirmed, state: saved.state).message
+            }
+            await reload()
+            await refreshReminderStatus(updateMessage: false)
+        } catch { errorMessage = "更新待办失败，请重试。" }
+    }
+
+    func refreshReminderStatus(updateMessage: Bool = true) async {
+        async let pending = reminders.pendingActionIDs()
+        async let delivered = reminders.deliveredActionIDs()
+        (pendingActionIDs, deliveredActionIDs) = await (pending, delivered)
+        if updateMessage { reminderMessage = await reminders.permissionMessage() }
+    }
+
+    func extractText(from file: LibraryFile) async throws -> DocumentTextResult {
+        // Do not read a copied body either if its indexed name is potentially sensitive.
+        guard !DocumentTextExtractor.isPotentiallySensitive(name: file.name) else {
+            throw DocumentReadError.sensitive
+        }
+        var root: URL?
+        var documentURL: URL?
+        if file.isAvailable, let source = sources.first(where: { $0.id == file.sourceID }) {
+            do {
+                let access = try FolderAccess.resolve(source)
+                root = access.url
+                documentURL = try FolderAccess.fileURL(relativePath: file.relativePath, root: access.url)
+            } catch {
+                root?.stopAccessingSecurityScopedResource()
+                root = nil
+            }
+        }
+        if documentURL == nil, let relative = file.managedCopyPath, let managedStore {
+            documentURL = try managedStore.url(for: relative)
+        }
+        guard let documentURL else { throw AccessError.missing }
+        let scopedRoot = root
+        let worker = Task.detached(priority: .userInitiated) {
+            defer { scopedRoot?.stopAccessingSecurityScopedResource() }
+            return try DocumentTextExtractor.extract(from: documentURL)
+        }
+        return try await withTaskCancellationHandler {
+            try await worker.value
+        } onCancel: { worker.cancel() }
+    }
+}
+
+private enum DocumentReadError: LocalizedError {
+    case sensitive
+    var errorDescription: String? {
+        "此文件名疑似包含密码、恢复码或账号资料，已停止读取正文。可以手动填写必要字段。"
     }
 }

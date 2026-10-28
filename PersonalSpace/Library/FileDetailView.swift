@@ -114,6 +114,13 @@ struct FileDetailView: View {
                             }
                         }
                         Divider()
+                        VStack(alignment: .leading, spacing: 10) {
+                            Text("订单跟进").font(.headline)
+                            Button("从此凭证创建订单", systemImage: "doc.badge.plus") { model.createOrder() }
+                            Text("可按需识别文字、校对事实，再填写明确的提醒日期。")
+                                .font(.callout).foregroundStyle(.secondary)
+                        }
+                        Divider()
                         VStack(alignment: .leading, spacing: 14) {
                             Text("文件信息").font(.headline)
                             property("来源", value: file.sourceName)

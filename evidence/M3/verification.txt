@@ -1,0 +1,14 @@
+PersonalSpace M3 verification — 2026-10-28
+Xcode 27.1 / macOS 26.6.2 arm64 / deployment macOS 26
+BUILD SUCCEEDED; TEST SUCCEEDED; 23 tests, 0 failures.
+Plain build after XCTest; codesign --verify --deep --strict passed.
+GUI: Chinese PNG OCR five explicit candidates; no receipt/deadline inference.
+GUI: editable and confirmed facts preserved on repeat OCR and restart.
+GUI: needs_date did not request authorization or schedule.
+GUI + UserNotifications logs: pending 1 -> cancel -> pending 0 -> re-enable -> pending 1.
+System log: actual delivery at 18:29:33 to notificationCenter; display sharing suppressed banner.
+Human-assisted system UI: user opened Notification Center, saw reminder, clicked it.
+App readback: correct order opened from exited state.
+Fixed cancelled-query error banner; real GRDB cancellation regression passed; final GUI query/navigation passed.
+Screenshots remain local; no notification-center screenshots containing other apps published.
+Developer ID, notarization and distribution have not been verified.

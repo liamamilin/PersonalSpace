@@ -3,6 +3,8 @@ import UniformTypeIdentifiers
 
 struct LibraryView: View {
     @EnvironmentObject private var model: LibraryModel
+    @Environment(\.openWindow) private var openWindow
+    @Environment(\.scenePhase) private var scenePhase
     @State private var showInspector = true
     @State private var sortOrder = [KeyPathComparator(\LibraryFile.name)]
     @FocusState private var searchFocused: Bool
@@ -18,7 +20,7 @@ struct LibraryView: View {
                     model.currentObjectID == nil ? model.selectedSourceID : "objects"
                 }, set: {
                     let destination = $0 ?? "all"
-                    if destination == "objects" || model.currentObjectID != nil { model.search = "" }
+                    if ["objects", "matters", "actions"].contains(destination) || !model.isFileList || model.currentObjectID != nil { model.search = "" }
                     model.selectedFileID = nil
                     model.selectedSourceID = destination
                 })) {
@@ -28,6 +30,10 @@ struct LibraryView: View {
                     }
                     Section("个人对象") {
                         Label("个人对象", systemImage: "desktopcomputer").tag("objects")
+                    }
+                    Section("跟进") {
+                        Label("事务", systemImage: "doc.text").tag("matters")
+                        Label("待办", systemImage: "checklist").tag("actions")
                     }
                     Section("已授权来源") {
                         ForEach(model.sources) { source in
@@ -98,18 +104,21 @@ struct LibraryView: View {
                     }.padding(16)
                     Divider()
                 }
-                if model.isObjectsList { ObjectsView() } else { content }
+                if model.isObjectsList { ObjectsView() }
+                else if model.isMattersList { MattersView() }
+                else if model.isActionsList { ActionsView() }
+                else { content }
                 Divider()
                 HStack(spacing: 8) {
                     if model.isScanning {
                         ProgressView().controlSize(.mini)
                         Text("扫描中 · 已发现 \(model.scanning.values.reduce(0, +)) 个文件")
                     } else {
-                        Text(model.isObjectsList ? "\(model.objects.count) 个个人对象" : "\(model.total) 份资料")
-                        if model.selectedFile != nil { Text("· 已选择 1 份") }
+                        Text(model.isObjectsList ? "\(model.objects.count) 个个人对象" : model.isMattersList ? "\(model.matters.count) 个事务" : model.isActionsList ? "\(model.actions.count) 项行动" : "\(model.total) 份资料")
+                        if model.isFileList && model.selectedFile != nil { Text("· 已选择 1 份") }
                     }
                     Spacer()
-                    if !model.isObjectsList && model.files.count < model.total {
+                    if model.isFileList && model.files.count < model.total {
                         Button("显示更多") { model.limit += 500 }.buttonStyle(.link)
                     }
                     Text("本地索引").foregroundStyle(.tertiary)
@@ -117,20 +126,24 @@ struct LibraryView: View {
                 .font(.caption).foregroundStyle(.secondary)
                 .padding(.horizontal, 16).padding(.vertical, 10)
             }
-            .navigationTitle(model.isObjectsList ? "个人对象" : model.currentObjectID != nil ? (model.selectedObject?.name ?? "个人对象") : model.selectedSourceID == "managed" ? "已托管" : model.sources.first(where: { $0.id == model.selectedSourceID })?.name ?? "资料库")
+            .navigationTitle(navigationTitle)
             .inspector(isPresented: $showInspector) {
                 Group {
                     if model.isObjectsList { ObjectInfoView() }
+                    else if model.isMattersList || model.isActionsList { MatterDetailView() }
                     else { FileDetailView() }
                 }.inspectorColumnWidth(min: 300, ideal: 340, max: 440)
             }
         }
-        .searchable(text: $model.search, placement: .toolbar, prompt: "搜索名称或路径")
+        .searchable(text: $model.search, placement: .toolbar, prompt: model.isFileList ? "搜索名称或路径" : "搜索名称或备注")
         .searchFocused($searchFocused)
         .toolbar {
             ToolbarItemGroup {
-                Button("创建个人对象", systemImage: "plus") { model.createObject() }
-                    .disabled(model.storageUnavailable).help("创建个人对象（⌘N）")
+                Menu {
+                    Button("创建个人对象") { model.createObject() }
+                    Button("创建订单事务") { model.createOrder() }
+                } label: { Label("新建", systemImage: "plus") }
+                    .disabled(model.storageUnavailable)
                 Button("添加文件夹", systemImage: "folder.badge.plus") { model.addFolders() }
                     .disabled(model.storageUnavailable)
                     .help("添加要索引的文件夹")
@@ -147,12 +160,19 @@ struct LibraryView: View {
                     }
                     Toggle("升序", isOn: $model.ascending)
                 } label: { Label("排序", systemImage: "arrow.up.arrow.down") }
+                    .disabled(!model.isFileList)
                 Button("详情", systemImage: "sidebar.right") { showInspector.toggle() }
                     .help("显示或隐藏文件详情")
             }
         }
         .frame(minWidth: 720, minHeight: 500)
-        .task { await model.start() }
+        .task {
+            model.openLibraryWindow = { openWindow(id: "library") }
+            await model.start()
+        }
+        .onChange(of: scenePhase) {
+            if scenePhase == .active { Task { await model.refreshReminderStatus() } }
+        }
         .task(id: queryKey) {
             do { try await Task.sleep(for: .milliseconds(120)) } catch { return }
             await model.reload()
@@ -179,6 +199,18 @@ struct LibraryView: View {
         .sheet(isPresented: $model.showFilePicker) {
             if let object = model.selectedObject { AddObjectFilesSheet(object: object).environmentObject(model) }
         }
+        .sheet(isPresented: $model.showMatterEditor) {
+            MatterEditorView(draft: model.matterDraft).environmentObject(model)
+        }
+    }
+
+    private var navigationTitle: String {
+        if model.isObjectsList { return "个人对象" }
+        if model.isMattersList { return "事务" }
+        if model.isActionsList { return "待办" }
+        if model.currentObjectID != nil { return model.selectedObject?.name ?? "个人对象" }
+        if model.selectedSourceID == "managed" { return "已托管" }
+        return model.sources.first(where: { $0.id == model.selectedSourceID })?.name ?? "资料库"
     }
 
     @ViewBuilder private var content: some View {
@@ -239,6 +271,7 @@ struct LibraryView: View {
                     Button("系统预览") { model.selectedFileID = id; model.quickLook() }
                     Button("打开可用文件") { model.selectedFileID = id; model.openSelected() }
                     Button("关联到对象…") { model.selectedFileID = id; model.showLinkSheet = true }
+                    Button("创建订单事务…") { model.selectedFileID = id; model.createOrder() }
                     if let objectID = model.currentObjectID {
                         Button("解除与此对象的关联") { Task { await model.unlink(id, from: objectID) } }
                     }

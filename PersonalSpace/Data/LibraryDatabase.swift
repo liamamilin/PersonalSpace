@@ -57,6 +57,53 @@ final class LibraryDatabase: Sendable {
                 CREATE INDEX object_item_item ON object_item(itemID);
                 """)
         }
+        migrator.registerMigration("M3-orders-facts-actions") { db in
+            try db.execute(sql: """
+                CREATE TABLE matter (
+                    id TEXT PRIMARY KEY NOT NULL,
+                    kind TEXT NOT NULL,
+                    title TEXT NOT NULL CHECK(length(trim(title)) > 0),
+                    status TEXT NOT NULL CHECK(status IN ('active', 'completed')),
+                    objectID TEXT REFERENCES personal_object(id) ON DELETE SET NULL,
+                    notes TEXT NOT NULL DEFAULT '',
+                    createdAt DATETIME NOT NULL,
+                    updatedAt DATETIME NOT NULL
+                );
+                CREATE TABLE matter_item (
+                    matterID TEXT NOT NULL REFERENCES matter(id) ON DELETE CASCADE,
+                    itemID TEXT NOT NULL REFERENCES item(id) ON DELETE CASCADE,
+                    PRIMARY KEY(matterID, itemID)
+                );
+                CREATE INDEX matter_item_item ON matter_item(itemID);
+                CREATE TABLE fact (
+                    id TEXT PRIMARY KEY NOT NULL,
+                    matterID TEXT NOT NULL REFERENCES matter(id) ON DELETE CASCADE,
+                    key TEXT NOT NULL,
+                    valueText TEXT NOT NULL,
+                    valueType TEXT NOT NULL CHECK(valueType IN ('text', 'date', 'amount')),
+                    state TEXT NOT NULL CHECK(state IN ('candidate', 'confirmed')),
+                    sourceItemID TEXT REFERENCES item(id) ON DELETE SET NULL,
+                    sourceExcerpt TEXT,
+                    origin TEXT NOT NULL CHECK(origin IN ('ocr', 'model', 'user'))
+                );
+                CREATE INDEX fact_matter ON fact(matterID);
+                CREATE TABLE action (
+                    id TEXT PRIMARY KEY NOT NULL,
+                    matterID TEXT REFERENCES matter(id) ON DELETE SET NULL,
+                    title TEXT NOT NULL CHECK(length(trim(title)) > 0),
+                    dueDate DATETIME,
+                    remindAt DATETIME,
+                    state TEXT NOT NULL CHECK(state IN ('needs_date', 'active', 'done', 'cancelled')),
+                    dateConfirmed BOOLEAN NOT NULL DEFAULT 0,
+                    createdAt DATETIME NOT NULL,
+                    updatedAt DATETIME NOT NULL,
+                    CHECK(dateConfirmed=1 OR remindAt IS NULL),
+                    CHECK(state<>'active' OR (dateConfirmed=1 AND remindAt IS NOT NULL))
+                );
+                CREATE INDEX action_matter ON action(matterID);
+                CREATE INDEX action_reminder ON action(state, remindAt);
+                """)
+        }
         try migrator.migrate(queue)
     }
 
@@ -146,7 +193,12 @@ final class LibraryDatabase: Sendable {
             if let objectID = query.objectID {
                 conditions.append("EXISTS (SELECT 1 FROM object_item oi WHERE oi.itemID=i.id AND oi.objectID=?)")
                 arguments += [objectID]
-            } else if !query.managedOnly {
+            }
+            if let matterID = query.matterID {
+                conditions.append("EXISTS (SELECT 1 FROM matter_item mi WHERE mi.itemID=i.id AND mi.matterID=?)")
+                arguments += [matterID]
+            }
+            if query.objectID == nil, query.matterID == nil, !query.managedOnly {
                 conditions.append("s.isEnabled=1")
             }
             if query.managedOnly {
@@ -267,6 +319,177 @@ final class LibraryDatabase: Sendable {
         }
     }
 
+    func matters(search: String = "") async throws -> [MatterRecord] {
+        try await queue.read { db in
+            var conditions = ["1=1"]
+            var arguments = StatementArguments()
+            for word in search.split(whereSeparator: \.isWhitespace).map(String.init) {
+                let escaped = Self.escapedSearch(word)
+                conditions.append("(m.title LIKE ? ESCAPE '\\' OR m.notes LIKE ? ESCAPE '\\')")
+                arguments += ["%\(escaped)%", "%\(escaped)%"]
+            }
+            return try MatterRecord.fetchAll(db, sql: """
+                SELECT m.*, (SELECT COUNT(*) FROM matter_item mi WHERE mi.matterID=m.id) AS itemCount
+                FROM matter m WHERE \(conditions.joined(separator: " AND "))
+                ORDER BY m.updatedAt DESC, m.id
+                """, arguments: arguments)
+        }
+    }
+
+    func matter(id: String) async throws -> MatterRecord? {
+        try await queue.read { db in
+            try MatterRecord.fetchOne(db, sql: """
+                SELECT m.*, (SELECT COUNT(*) FROM matter_item mi WHERE mi.matterID=m.id) AS itemCount
+                FROM matter m WHERE m.id=?
+                """, arguments: [id])
+        }
+    }
+
+    func facts(matterID: String) async throws -> [FactRecord] {
+        try await queue.read { db in
+            try FactRecord.fetchAll(db, sql: "SELECT * FROM fact WHERE matterID=? ORDER BY rowid",
+                                    arguments: [matterID])
+        }
+    }
+
+    func actions(matterID: String? = nil) async throws -> [ActionRecord] {
+        try await queue.read { db in
+            let condition = matterID == nil ? "1=1" : "a.matterID=?"
+            let arguments: StatementArguments = matterID.map { [$0] } ?? []
+            return try ActionRecord.fetchAll(db, sql: """
+                SELECT a.*, m.title AS matterTitle FROM action a LEFT JOIN matter m ON m.id=a.matterID
+                WHERE \(condition)
+                ORDER BY CASE a.state WHEN 'active' THEN 0 WHEN 'needs_date' THEN 1 ELSE 2 END,
+                    a.remindAt IS NULL, a.remindAt, a.updatedAt DESC, a.id
+                """, arguments: arguments)
+        }
+    }
+
+    func action(id: String) async throws -> ActionRecord? {
+        try await queue.read { db in
+            try Self.fetchAction(db, id: id)
+        }
+    }
+
+    // Saving the editor is atomic: failed links/facts cannot leave a half-saved order or reminder.
+    // A nil action means the user disabled the order's action; its old rows remain cancelled.
+    @discardableResult
+    func saveMatter(_ draft: MatterDraft) async throws -> ActionRecord? {
+        let title = draft.title.trimmingCharacters(in: .whitespacesAndNewlines)
+        let facts = draft.facts.compactMap { fact -> FactDraft? in
+            var cleaned = fact
+            cleaned.valueText = fact.valueText.trimmingCharacters(in: .whitespacesAndNewlines)
+            return cleaned.valueText.isEmpty ? nil : cleaned
+        }
+        guard !draft.id.isEmpty, !title.isEmpty, draft.kind == "order",
+              ["active", "completed"].contains(draft.status),
+              facts.allSatisfy({ !$0.id.isEmpty && !$0.key.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                  && ["text", "date", "amount"].contains($0.valueType)
+                  && ["candidate", "confirmed"].contains($0.state)
+                  && ["ocr", "model", "user"].contains($0.origin)
+                  && ($0.valueType != "date" || Self.isValidCalendarDate($0.valueText)) }) else {
+            throw LibraryDataError.invalidMatter
+        }
+        if let action = draft.action {
+            guard !action.id.isEmpty, !action.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                  ["needs_date", "active", "done", "cancelled"].contains(action.state),
+                  action.dueDate?.timeIntervalSince1970.isFinite != false,
+                  action.remindAt?.timeIntervalSince1970.isFinite != false else {
+                throw LibraryDataError.invalidAction
+            }
+        }
+        return try await queue.write { db in
+            let now = Date()
+            try db.execute(sql: """
+                INSERT INTO matter(id, kind, title, status, objectID, notes, createdAt, updatedAt)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET kind=excluded.kind, title=excluded.title,
+                    status=excluded.status, objectID=excluded.objectID, notes=excluded.notes,
+                    updatedAt=excluded.updatedAt
+                """, arguments: [draft.id, draft.kind, title, draft.status, draft.objectID, draft.notes, now, now])
+            try db.execute(sql: "DELETE FROM matter_item WHERE matterID=?", arguments: [draft.id])
+            for itemID in Set(draft.itemIDs) {
+                try db.execute(sql: "INSERT INTO matter_item(matterID, itemID) VALUES (?, ?)",
+                               arguments: [draft.id, itemID])
+            }
+            try db.execute(sql: "DELETE FROM fact WHERE matterID=?", arguments: [draft.id])
+            for fact in facts {
+                try db.execute(sql: """
+                    INSERT INTO fact(id, matterID, key, valueText, valueType, state, sourceItemID, sourceExcerpt, origin)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """, arguments: [fact.id, draft.id, fact.key, fact.valueText, fact.valueType,
+                        fact.state, fact.sourceItemID, fact.sourceExcerpt, fact.origin])
+            }
+            guard let action = draft.action else {
+                try db.execute(sql: "UPDATE action SET state='cancelled', updatedAt=? WHERE matterID=?",
+                               arguments: [now, draft.id])
+                return nil
+            }
+            // The first action belongs to this editor even when an edit generated a fresh draft UUID.
+            let stableID = try String.fetchOne(db, sql: """
+                SELECT id FROM action WHERE matterID=? ORDER BY createdAt, id LIMIT 1
+                """, arguments: [draft.id]) ?? action.id
+            if let existing = try Row.fetchOne(db, sql: "SELECT matterID FROM action WHERE id=?", arguments: [stableID]) {
+                let owner: String? = existing["matterID"]
+                guard owner == draft.id else { throw LibraryDataError.invalidAction }
+            }
+            let state: String
+            let reminder: Date?
+            if ["done", "cancelled"].contains(action.state) {
+                state = action.state
+                reminder = nil
+            } else if !action.dateConfirmed || action.remindAt == nil {
+                state = "needs_date"
+                reminder = nil
+            } else {
+                state = action.state == "needs_date" ? "active" : action.state
+                reminder = action.remindAt
+            }
+            try db.execute(sql: """
+                INSERT INTO action(id, matterID, title, dueDate, remindAt, state, dateConfirmed, createdAt, updatedAt)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET title=excluded.title, dueDate=excluded.dueDate,
+                    remindAt=excluded.remindAt, state=excluded.state, dateConfirmed=excluded.dateConfirmed,
+                    updatedAt=excluded.updatedAt
+                """, arguments: [stableID, draft.id, action.title.trimmingCharacters(in: .whitespacesAndNewlines),
+                    action.dueDate, reminder, state, action.dateConfirmed, now, now])
+            return try Self.fetchAction(db, id: stableID)
+        }
+    }
+
+    func setActionState(id: String, state: String) async throws {
+        guard ["needs_date", "active", "done", "cancelled"].contains(state) else {
+            throw LibraryDataError.invalidAction
+        }
+        try await queue.write { db in
+            guard let action = try Self.fetchAction(db, id: id) else { throw LibraryDataError.invalidAction }
+            let normalized = state == "active" && (!action.dateConfirmed || action.remindAt == nil)
+                ? "needs_date" : state
+            try db.execute(sql: "UPDATE action SET state=?, updatedAt=? WHERE id=?",
+                           arguments: [normalized, Date(), id])
+        }
+    }
+
+    private static func fetchAction(_ db: Database, id: String) throws -> ActionRecord? {
+        try ActionRecord.fetchOne(db, sql: """
+            SELECT a.*, m.title AS matterTitle FROM action a LEFT JOIN matter m ON m.id=a.matterID WHERE a.id=?
+            """, arguments: [id])
+    }
+
+    private static func isValidCalendarDate(_ value: String) -> Bool {
+        guard value.range(of: "^[0-9]{4}-[0-9]{2}-[0-9]{2}$", options: .regularExpression) != nil else {
+            return false
+        }
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.calendar = Calendar(identifier: .gregorian)
+        formatter.timeZone = TimeZone(secondsFromGMT: 0)
+        formatter.dateFormat = "yyyy-MM-dd"
+        formatter.isLenient = false
+        guard let date = formatter.date(from: value) else { return false }
+        return formatter.string(from: date) == value
+    }
+
     private static let fileColumns = """
         i.id, i.sourceID, i.relativePath, i.name, i.typeIdentifier, i.bytes,
         i.modifiedAt, i.createdAt, (i.isAvailable AND s.isEnabled) AS isAvailable,
@@ -284,13 +507,15 @@ final class LibraryDatabase: Sendable {
 }
 
 private enum LibraryDataError: LocalizedError {
-    case invalidObject, invalidManagedCopy, managedCopyNotSaved
+    case invalidObject, invalidManagedCopy, managedCopyNotSaved, invalidMatter, invalidAction
 
     var errorDescription: String? {
         switch self {
         case .invalidObject: "请填写对象名称，并选择设备或其它类型。"
         case .invalidManagedCopy: "托管副本路径或校验信息无效。"
         case .managedCopyNotSaved: "资料不存在或已有托管副本，本次副本未保存。"
+        case .invalidMatter: "请填写订单标题，并检查事实字段和来源信息。"
+        case .invalidAction: "行动资料无效，请填写标题并确认具体提醒时间。"
         }
     }
 }
