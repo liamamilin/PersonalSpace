@@ -12,6 +12,16 @@ struct FolderSource: Decodable, FetchableRecord, Identifiable, Sendable {
     var fileCount: Int
 }
 
+struct PersonalObject: Decodable, FetchableRecord, Identifiable, Sendable, Equatable {
+    var id: String
+    var kind: String
+    var name: String
+    var notes: String
+    var createdAt: Date
+    var updatedAt: Date
+    var itemCount: Int
+}
+
 struct LibraryFile: Decodable, FetchableRecord, Identifiable, Sendable, Equatable {
     var id: String
     var sourceID: String
@@ -25,6 +35,9 @@ struct LibraryFile: Decodable, FetchableRecord, Identifiable, Sendable, Equatabl
     var sourceName: String
     var sourcePath: String
     var sourceError: String?
+    var managedCopyPath: String? = nil
+    var managedSHA256: String? = nil
+    var managedAt: Date? = nil
 
     var modifiedSortDate: Date { modifiedAt ?? .distantPast }
     var kind: String { UTType(typeIdentifier)?.localizedDescription ?? "文件" }
@@ -67,6 +80,8 @@ enum FileSort: String, CaseIterable, Identifiable, Sendable {
 struct FileQuery: Sendable {
     var search = ""
     var sourceID: String?
+    var objectID: String? = nil
+    var managedOnly = false
     var sort: FileSort = .name
     var ascending = true
     var limit = 500

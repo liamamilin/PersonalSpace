@@ -54,7 +54,7 @@ struct SourcesView: View {
                     }.padding(.vertical, 8)
                 }.listStyle(.inset)
             }
-            Text("移除来源仅清除本应用的索引，不会移动、修改或删除原文件。")
+            Text("移除来源停止访问该文件夹，保留已有对象关联与托管副本；原文件不变。")
                 .font(.caption).foregroundStyle(.secondary)
         }
         .padding(24)
@@ -65,6 +65,6 @@ struct SourcesView: View {
                 if let source = removing { Task { await model.remove(source) } }
                 removing = nil
             }
-        } message: { Text("将清除此来源在 PersonalSpace 中的文件索引，原文件保持不变。") }
+        } message: { Text("此来源将从普通资料库中隐藏。已关联资料与托管副本保留，原文件保持不变。") }
     }
 }

@@ -1,0 +1,14 @@
+Executable=/Users/milin/2026/软件开发/personal-space/.build/DerivedData/Build/Products/Debug/PersonalSpace.app/Contents/MacOS/PersonalSpace
+[Dict]
+	[Key] com.apple.security.app-sandbox
+	[Value]
+		[Bool] true
+	[Key] com.apple.security.files.bookmarks.app-scope
+	[Value]
+		[Bool] true
+	[Key] com.apple.security.files.user-selected.read-only
+	[Value]
+		[Bool] true
+	[Key] com.apple.security.get-task-allow
+	[Value]
+		[Bool] true

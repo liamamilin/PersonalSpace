@@ -2,9 +2,9 @@
 
 **开发规格 v1.1（能力优先版）｜2026-10-28**
 
-> M1 已实现：原生 SwiftUI 资料库、用户授权文件夹、只读扫描、本地 SQLite/GRDB 索引、搜索、系统预览、打开和 Finder 定位。后续章节保留原始产品规格，尚未实现的阶段不出现在应用中。
+> M1–M2 已实现：原生文件资料库、授权持久化、搜索预览、个人对象、多对多资料关联，以及用户主动保存的托管副本。后续章节保留原始产品规格，尚未实现的阶段不出现在应用中。
 
-## 运行 M1
+## 运行
 
 需要 macOS 26+；本轮使用 Xcode 27.1（Swift 6.4、macOS 27 SDK）构建，部署目标为 macOS 26。打开根目录的 `PersonalSpace.xcodeproj`，选择 `PersonalSpace` scheme 后运行。Debug 使用本机 ad hoc 签名，App Sandbox 始终开启；首次构建需要从官方仓库下载固定版本 GRDB 7.11.1。
 
@@ -23,7 +23,7 @@ XCTest 会临时重签宿主应用；测试后请再次执行上面的 `build` �
 
 在 Finder 打开 `.build/DerivedData/Build/Products/Debug/PersonalSpace.app`，或直接用 Xcode Run。此为本地开发构建，未做 Developer ID 签名、公证和发行打包。
 
-### 2 分钟演示
+### M1 基础操作
 
 1. 启动时没有演示数据，点击「添加文件夹」，依次选择 `fixtures/M1/A` 和 `fixtures/M1/B`。这些是明确标记的合成测试文件，应用不会自动导入。
 2. 按 `⌘F` 搜「订单」，选择 PDF，右侧显示真实系统预览；点「系统预览」或按空格放大，点「在 Finder 中显示」定位原件，点「打开原件」使用默认应用。
@@ -31,9 +31,19 @@ XCTest 会临时重签宿主应用；测试后请再次执行上面的 `build` �
 4. `⌘Q` 退出后重新打开，来源与索引仍在，启动自动补扫。`⌘,` 打开来源设置，可刷新、停止扫描、重新授权和移除来源。
 5. 仅把 `fixtures/M1/A/订单样例.pdf` 移到 A 外的测试位置，刷新 A：旧记录保留并显示不可用。放回后刷新，恢复同一条记录。不要用个人原件做移动测试。
 
-数据库位于应用沙盒的 `Application Support/PersonalSpace/Library.sqlite`。只保存来源书签、文件名、类型、大小、日期和相对路径，不读正文索引、不联网、不移动或修改原件。默认跳过隐藏文件、目录包及所有符号链接。失败或停止的扫描保留原有可用状态。一次显示 500 个查询结果，可点底部「显示更多」。
+数据库位于应用沙盒的 `Application Support/PersonalSpace/Library.sqlite`。保存来源书签、文件元数据、个人对象与关联、托管副本路径和校验值，不读正文索引、不联网、不移动或修改原件。默认跳过隐藏文件、目录包及所有符号链接。失败或停止的扫描保留原有可用状态。一次显示 500 个查询结果，可点底部「显示更多」。
 
-实现入口：`PersonalSpace/App/PersonalSpaceApp.swift`；界面与扫描在 `PersonalSpace/Library`；唯一数据层在 `PersonalSpace/Data`；来源设置在 `PersonalSpace/Settings`。测试位于 `PersonalSpaceTests/LibraryTests.swift`。
+实现入口：`PersonalSpace/App/PersonalSpaceApp.swift`；界面与扫描在 `PersonalSpace/Library`；唯一数据层在 `PersonalSpace/Data`；来源设置在 `PersonalSpace/Settings`。测试位于 `PersonalSpaceTests/LibraryTests.swift` 和 `PersonalSpaceTests/ObjectAndArchiveTests.swift`。
+
+## M2：个人对象与托管副本
+
+1. 在「个人对象」中点创建，或按 `⌘N`，填写「我的电脑」、设备类别和备注。
+2. 点「添加已有资料」，按住 `⌘` 多选 A 中的 `订单样例.pdf` 与 B 中的 `电脑发票.txt`，关联后直接在对象中查找、预览和打开。M2 为 B 新增了一份明确标记的合成发票，当前测试来源共 4 个文件。
+3. 选中订单，点「保存副本到资料库」。复制在后台完成，先比对 SHA-256，再提交 SQLite，原文件不移动、不修改。详情分别提供「打开原件」和「打开托管副本」。
+4. 仅将合成测试订单移到 A 外后刷新：原件显示不可用，托管副本仍能预览和打开。退出重启，个人对象、两份关联及托管副本仍在。将测试原件放回并刷新可恢复原件访问。
+5. 可从资料详情关联到另一个对象、解除某一条关联，或返回资料库。解除关联不删除资料。移除来源停止扫描与访问，保留对象关联和托管副本；从「已托管」可找到副本，重新添加原目录会恢复原来的文件记录。
+
+托管位置为沙盒内 `Application Support/PersonalSpace/Vault`。不做自动去重、源文件删除、内容寻址或后台全盘哈希。实际验证见 [M2 证据](evidence/M2/README.md)。
 
 ## 一句话定义
 

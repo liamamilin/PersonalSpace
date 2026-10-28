@@ -19,6 +19,8 @@ struct LibraryCommands: Commands {
     @ObservedObject var model: LibraryModel
     var body: some Commands {
         CommandGroup(replacing: .newItem) {
+            Button("新建个人对象…") { model.createObject() }.keyboardShortcut("n")
+                .disabled(model.storageUnavailable)
             Button("添加文件夹…") { model.addFolders() }.keyboardShortcut("o", modifiers: [.command, .shift])
                 .disabled(model.storageUnavailable)
         }
@@ -27,10 +29,13 @@ struct LibraryCommands: Commands {
         }
         CommandMenu("资料") {
             Button("系统预览") { model.quickLook() }.disabled(model.selectedFile == nil)
-            Button("打开原件") { model.openSelected() }.keyboardShortcut("o")
+            Button("打开可用文件") { model.openSelected() }.keyboardShortcut("o")
                 .disabled(model.selectedFile == nil)
             Button("在 Finder 中显示") { model.revealSelected() }.keyboardShortcut("r", modifiers: [.command, .shift])
                 .disabled(model.selectedFile == nil)
+            Button("关联到对象…") { model.showLinkSheet = true }.disabled(model.selectedFile == nil)
+            Button("保存副本到资料库") { Task { await model.archiveSelected() } }
+                .disabled(model.selectedFile == nil || model.selectedFile?.managedCopyPath != nil || model.archivingID != nil)
             Divider()
             Button("刷新来源") { model.refreshAll() }.keyboardShortcut("r")
                 .disabled(model.sources.isEmpty || model.isScanning)

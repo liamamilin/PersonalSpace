@@ -1,0 +1,5 @@
+BUILD SUCCEEDED
+TEST SUCCEEDED
+12 tests, 0 failures
+GUI: object creation, two-source association, verified copy, missing original, default PDF app open, quit/restart persistence passed.
+Synthetic original restored after verification.

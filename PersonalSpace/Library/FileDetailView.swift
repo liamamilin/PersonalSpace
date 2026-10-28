@@ -28,31 +28,91 @@ struct FileDetailView: View {
                             Text("\(file.kind) · \(file.size)").font(.subheadline).foregroundStyle(.secondary)
                         }
                         if let url = model.previewURL {
-                            SystemPreview(url: url).frame(height: 260)
-                                .accessibilityLabel("原文件系统预览")
+                            VStack(alignment: .leading, spacing: 8) {
+                                Text(model.previewIsManaged ? "正在预览托管副本" : "正在预览原文件")
+                                    .font(.caption).foregroundStyle(.secondary)
+                                SystemPreview(url: url).frame(height: 250)
+                                    .accessibilityLabel(model.previewIsManaged ? "托管副本系统预览" : "原文件系统预览")
+                            }
                         } else {
                             ContentUnavailableView {
-                                Label("原位置已不可用", systemImage: "doc.badge.exclamationmark")
+                                Label("文件暂不可用", systemImage: "doc.badge.exclamationmark")
                             } description: {
-                                Text(model.previewError ?? file.sourceError ?? "请刷新或重新授权来源。")
-                            } actions: {
-                                if let source = model.sources.first(where: { $0.id == file.sourceID }) {
-                                    Button("刷新来源") { model.refresh(source) }.disabled(model.scanning[source.id] != nil)
+                                Text(model.previewError ?? "请刷新或重新授权来源。")
+                            }.frame(minHeight: 170)
+                        }
+                        VStack(alignment: .leading, spacing: 10) {
+                            Text("原文件").font(.headline)
+                            if let error = model.originalError {
+                                Label(error, systemImage: "exclamationmark.triangle")
+                                    .font(.callout).foregroundStyle(.secondary)
+                            }
+                            HStack {
+                                Button("打开原件", systemImage: "arrow.up.right.square") { model.openOriginal() }
+                                Button("在 Finder 中显示", systemImage: "folder") { model.revealSelected() }
+                            }.controlSize(.small).disabled(model.originalURL == nil)
+                            if model.originalURL == nil,
+                               let source = model.sources.first(where: { $0.id == file.sourceID }) {
+                                HStack {
+                                    Button("刷新来源") { model.refresh(source) }
                                     Button("重新授权") { model.addFolders(replacing: source) }
-                                        .disabled(model.scanning[source.id] != nil)
+                                }.controlSize(.small).disabled(model.scanning[source.id] != nil)
+                            }
+                        }
+                        Divider()
+                        VStack(alignment: .leading, spacing: 10) {
+                            Text("托管副本").font(.headline)
+                            if file.managedCopyPath != nil {
+                                if let error = model.managedError {
+                                    Label(error, systemImage: "exclamationmark.triangle").foregroundStyle(.orange)
+                                } else {
+                                    Label("已保存到本地资料库并完成校验", systemImage: "checkmark.circle")
+                                        .font(.callout).foregroundStyle(.secondary)
+                                }
+                                HStack {
+                                    Button("打开托管副本") { model.openManagedCopy() }
+                                    Button("预览副本", systemImage: "eye") { model.quickLook(preferManaged: true) }
+                                }.controlSize(.small).disabled(model.managedURL == nil)
+                                if let date = file.managedAt {
+                                    Text("保存于 " + date.formatted(date: .abbreviated, time: .shortened))
+                                        .font(.caption).foregroundStyle(.secondary)
+                                }
+                            } else {
+                                Text("主动复制一份凭证；原文件不会移动或修改。")
+                                    .font(.callout).foregroundStyle(.secondary)
+                                if model.archivingID == file.id {
+                                    HStack { ProgressView().controlSize(.small); Text("正在复制并校验…") }
+                                } else {
+                                    Button("保存副本到资料库", systemImage: "externaldrive.badge.plus") {
+                                        Task { await model.archiveSelected() }
+                                    }.disabled(model.originalURL == nil || model.archivingID != nil)
                                 }
                             }
-                            .frame(minHeight: 200)
                         }
-                        HStack {
-                            Button("打开原件", systemImage: "arrow.up.right.square") { model.openSelected() }
-                            Button("在 Finder 中显示", systemImage: "folder") { model.revealSelected() }
+                        Divider()
+                        VStack(alignment: .leading, spacing: 10) {
+                            HStack {
+                                Text("关联的对象").font(.headline)
+                                Spacer()
+                                Button("关联", systemImage: "link") { model.showLinkSheet = true }
+                            }
+                            if model.linkedObjects.isEmpty {
+                                Text("尚未关联个人对象").font(.callout).foregroundStyle(.secondary)
+                            }
+                            ForEach(model.linkedObjects) { object in
+                                HStack {
+                                    Button(object.name) { model.showObject(object.id) }.buttonStyle(.link)
+                                    Spacer()
+                                    Button("解除关联", systemImage: "xmark") {
+                                        Task { await model.unlink(file.id, from: object.id) }
+                                    }.labelStyle(.iconOnly).buttonStyle(.borderless)
+                                        .help("解除与「\(object.name)」的关联，保留原文件")
+                                }
+                            }
+                            if model.currentObjectID != nil {
+                                Button("在资料库中查看") { Task { await model.showInLibrary(file) } }
+                            }
                         }
-                        .controlSize(.small)
-                        .disabled(model.previewURL == nil)
-                        Button("系统预览", systemImage: "eye") { model.quickLook() }
-                            .disabled(model.previewURL == nil)
-                            .help("预览所选原文件（空格键）")
                         Divider()
                         VStack(alignment: .leading, spacing: 14) {
                             Text("文件信息").font(.headline)
@@ -66,10 +126,13 @@ struct FileDetailView: View {
                 }
             } else {
                 ContentUnavailableView("选择一份资料", systemImage: "doc.text.magnifyingglass",
-                    description: Text("查看原文件预览、位置和详细信息。"))
+                    description: Text("查看文件预览、关联对象和详细信息。"))
             }
         }
-        .task(id: model.selectedFile) { model.preparePreview() }
+        .task(id: model.selectedFile) {
+            model.preparePreview()
+            await model.reloadLinkedObjects()
+        }
     }
 
     private func property(_ label: String, value: String) -> some View {
@@ -85,7 +148,7 @@ struct QuickLookSheet: View {
     var body: some View {
         VStack(spacing: 0) {
             HStack {
-                Text(model.selectedFile?.name ?? "系统预览").font(.headline).lineLimit(1)
+                Text((model.selectedFile?.name ?? "系统预览") + (model.previewIsManaged ? " · 托管副本" : "")).font(.headline).lineLimit(1)
                 Spacer()
                 Button("完成") { model.showQuickLook = false }.keyboardShortcut(.cancelAction)
             }.padding()

@@ -13,3 +13,6 @@ evidence/*.log
 
 evidence/03-finder.png
 evidence/test-summary.json
+
+# Actual UI screenshots remain local; publish source and text verification.
+evidence/M*/*.png

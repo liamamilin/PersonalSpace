@@ -14,10 +14,20 @@ struct LibraryView: View {
     var body: some View {
         NavigationSplitView {
             VStack(spacing: 0) {
-                List(selection: Binding<String?>(get: { model.selectedSourceID },
-                    set: { model.selectedSourceID = $0 ?? "all" })) {
+                List(selection: Binding<String?>(get: {
+                    model.currentObjectID == nil ? model.selectedSourceID : "objects"
+                }, set: {
+                    let destination = $0 ?? "all"
+                    if destination == "objects" || model.currentObjectID != nil { model.search = "" }
+                    model.selectedFileID = nil
+                    model.selectedSourceID = destination
+                })) {
                     Section("资料库") {
                         Label("所有资料", systemImage: "tray.full").tag("all")
+                        Label("已托管", systemImage: "externaldrive.badge.checkmark").tag("managed")
+                    }
+                    Section("个人对象") {
+                        Label("个人对象", systemImage: "desktopcomputer").tag("objects")
                     }
                     Section("已授权来源") {
                         ForEach(model.sources) { source in
@@ -69,18 +79,37 @@ struct LibraryView: View {
                             .disabled(model.scanning[source.id] != nil)
                     }.padding(12).background(.orange.opacity(0.1))
                 }
-                content
+                if let object = model.selectedObject, model.currentObjectID != nil {
+                    HStack(spacing: 12) {
+                        Button("个人对象", systemImage: "chevron.left") {
+                            model.selectedSourceID = "objects"
+                            model.selectedFileID = nil
+                            model.search = ""
+                        }.buttonStyle(.borderless)
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text(object.name).font(.headline)
+                            if !object.notes.isEmpty {
+                                Text(object.notes).font(.caption).foregroundStyle(.secondary).lineLimit(2)
+                            }
+                        }
+                        Spacer()
+                        Button("编辑", systemImage: "pencil") { model.editObject(object) }
+                        Button("添加已有资料", systemImage: "link.badge.plus") { model.showFilePicker = true }
+                    }.padding(16)
+                    Divider()
+                }
+                if model.isObjectsList { ObjectsView() } else { content }
                 Divider()
                 HStack(spacing: 8) {
                     if model.isScanning {
                         ProgressView().controlSize(.mini)
                         Text("扫描中 · 已发现 \(model.scanning.values.reduce(0, +)) 个文件")
                     } else {
-                        Text("\(model.total) 份资料")
+                        Text(model.isObjectsList ? "\(model.objects.count) 个个人对象" : "\(model.total) 份资料")
                         if model.selectedFile != nil { Text("· 已选择 1 份") }
                     }
                     Spacer()
-                    if model.files.count < model.total {
+                    if !model.isObjectsList && model.files.count < model.total {
                         Button("显示更多") { model.limit += 500 }.buttonStyle(.link)
                     }
                     Text("本地索引").foregroundStyle(.tertiary)
@@ -88,15 +117,20 @@ struct LibraryView: View {
                 .font(.caption).foregroundStyle(.secondary)
                 .padding(.horizontal, 16).padding(.vertical, 10)
             }
-            .navigationTitle(model.sources.first(where: { $0.id == model.selectedSourceID })?.name ?? "资料库")
+            .navigationTitle(model.isObjectsList ? "个人对象" : model.currentObjectID != nil ? (model.selectedObject?.name ?? "个人对象") : model.selectedSourceID == "managed" ? "已托管" : model.sources.first(where: { $0.id == model.selectedSourceID })?.name ?? "资料库")
             .inspector(isPresented: $showInspector) {
-                FileDetailView().inspectorColumnWidth(min: 300, ideal: 340, max: 440)
+                Group {
+                    if model.isObjectsList { ObjectInfoView() }
+                    else { FileDetailView() }
+                }.inspectorColumnWidth(min: 300, ideal: 340, max: 440)
             }
         }
         .searchable(text: $model.search, placement: .toolbar, prompt: "搜索名称或路径")
         .searchFocused($searchFocused)
         .toolbar {
             ToolbarItemGroup {
+                Button("创建个人对象", systemImage: "plus") { model.createObject() }
+                    .disabled(model.storageUnavailable).help("创建个人对象（⌘N）")
                 Button("添加文件夹", systemImage: "folder.badge.plus") { model.addFolders() }
                     .disabled(model.storageUnavailable)
                     .help("添加要索引的文件夹")
@@ -138,10 +172,17 @@ struct LibraryView: View {
             model.ascending = first.order == .forward
         }
         .sheet(isPresented: $model.showQuickLook) { QuickLookSheet().environmentObject(model) }
+        .sheet(isPresented: $model.showObjectEditor) {
+            ObjectEditorView(object: model.objectBeingEdited).environmentObject(model)
+        }
+        .sheet(isPresented: $model.showLinkSheet) { LinkToObjectSheet().environmentObject(model) }
+        .sheet(isPresented: $model.showFilePicker) {
+            if let object = model.selectedObject { AddObjectFilesSheet(object: object).environmentObject(model) }
+        }
     }
 
     @ViewBuilder private var content: some View {
-        if model.sources.isEmpty {
+        if model.sources.isEmpty && model.currentObjectID == nil && model.selectedSourceID != "managed" {
             ContentUnavailableView {
                 Label("把散落的个人资料放到一个入口", systemImage: "folder.badge.plus")
             } description: {
@@ -152,13 +193,15 @@ struct LibraryView: View {
             }.frame(maxWidth: .infinity, maxHeight: .infinity)
         } else if model.files.isEmpty {
             ContentUnavailableView {
-                Label(model.search.isEmpty ? (model.isScanning ? "正在查找文件" : "这个来源还没有文件") : "没有找到相关资料",
+                Label(model.search.isEmpty ? (model.isScanning ? "正在查找文件" : model.currentObjectID != nil ? "还没有关联资料" : model.selectedSourceID == "managed" ? "还没有托管副本" : "这个来源还没有文件") : "没有找到相关资料",
                       systemImage: model.search.isEmpty ? "doc.text.magnifyingglass" : "magnifyingglass")
             } description: {
-                Text(model.search.isEmpty ? "仅索引普通文件，跳过隐藏文件、目录包和符号链接。" : "试试文件名或路径中的其它关键词。")
+                Text(model.search.isEmpty ? (model.currentObjectID != nil ? "添加已有资料，把来自不同位置的凭证关联到这个对象。" : model.selectedSourceID == "managed" ? "选择一份资料，在详情中点击「保存副本到资料库」。" : "仅索引普通文件，跳过隐藏文件、目录包和符号链接。") : "试试文件名或路径中的其它关键词。")
             } actions: {
                 if !model.search.isEmpty { Button("清除搜索") { model.search = "" } }
-                else { Button("刷新来源") { model.refreshAll() }.disabled(model.isScanning) }
+                else if model.currentObjectID != nil {
+                    Button("添加已有资料") { model.showFilePicker = true }
+                } else { Button("刷新来源") { model.refreshAll() }.disabled(model.isScanning) }
             }.frame(maxWidth: .infinity, maxHeight: .infinity)
         } else {
             Table(model.files, selection: $model.selectedFileID, sortOrder: $sortOrder) {
@@ -167,6 +210,10 @@ struct LibraryView: View {
                         Image(nsImage: NSWorkspace.shared.icon(for: UTType(file.typeIdentifier) ?? .data))
                             .resizable().frame(width: 20, height: 20)
                         Text(file.name).lineLimit(1)
+                        if file.managedCopyPath != nil {
+                            Image(systemName: "externaldrive.badge.checkmark").foregroundStyle(.secondary)
+                                .help("已保存托管副本")
+                        }
                         if !file.isAvailable || file.sourceError != nil {
                             Image(systemName: "exclamationmark.triangle").foregroundStyle(.orange)
                                 .help(file.sourceError ?? "原位置已不可用")
@@ -190,7 +237,11 @@ struct LibraryView: View {
             .contextMenu(forSelectionType: String.self) { ids in
                 if let id = ids.first {
                     Button("系统预览") { model.selectedFileID = id; model.quickLook() }
-                    Button("打开原件") { model.selectedFileID = id; model.openSelected() }
+                    Button("打开可用文件") { model.selectedFileID = id; model.openSelected() }
+                    Button("关联到对象…") { model.selectedFileID = id; model.showLinkSheet = true }
+                    if let objectID = model.currentObjectID {
+                        Button("解除与此对象的关联") { Task { await model.unlink(id, from: objectID) } }
+                    }
                     Button("在 Finder 中显示") { model.selectedFileID = id; model.revealSelected() }
                 }
             } primaryAction: { ids in
