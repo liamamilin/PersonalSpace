@@ -586,9 +586,9 @@ final class LibraryDatabase: Sendable {
     }
 
     // Saving the editor is atomic: failed links/facts cannot leave a half-saved order or reminder.
-    // A nil action means the user disabled the order's action; its old rows remain cancelled.
+    // Only submitted actions change; omitted rows retain their IDs, dates and state.
     @discardableResult
-    func saveMatter(_ draft: MatterDraft) async throws -> ActionRecord? {
+    func saveMatter(_ draft: MatterDraft) async throws -> [ActionRecord] {
         let title = draft.title.trimmingCharacters(in: .whitespacesAndNewlines)
         let facts = draft.facts.compactMap { fact -> FactDraft? in
             var cleaned = fact
@@ -604,14 +604,10 @@ final class LibraryDatabase: Sendable {
                   && ($0.valueType != "date" || Self.isValidCalendarDate($0.valueText)) }) else {
             throw LibraryDataError.invalidMatter
         }
-        if let action = draft.action {
-            guard !action.id.isEmpty, !action.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-                  ["needs_date", "active", "done", "cancelled"].contains(action.state),
-                  action.dueDate?.timeIntervalSince1970.isFinite != false,
-                  action.remindAt?.timeIntervalSince1970.isFinite != false else {
-                throw LibraryDataError.invalidAction
-            }
+        guard Set(draft.actions.map(\.id)).count == draft.actions.count else {
+            throw LibraryDataError.invalidAction
         }
+        for action in draft.actions { try Self.validateAction(action) }
         return try await queue.write { db in
             let now = Date()
             try db.execute(sql: """
@@ -634,41 +630,47 @@ final class LibraryDatabase: Sendable {
                     """, arguments: [fact.id, draft.id, fact.key, fact.valueText, fact.valueType,
                         fact.state, fact.sourceItemID, fact.sourceExcerpt, fact.origin])
             }
-            guard let action = draft.action else {
-                try db.execute(sql: "UPDATE action SET state='cancelled', updatedAt=? WHERE matterID=?",
-                               arguments: [now, draft.id])
-                return nil
-            }
-            // The first action belongs to this editor even when an edit generated a fresh draft UUID.
-            let stableID = try String.fetchOne(db, sql: """
-                SELECT id FROM action WHERE matterID=? ORDER BY createdAt, id LIMIT 1
-                """, arguments: [draft.id]) ?? action.id
-            if let existing = try Row.fetchOne(db, sql: "SELECT matterID FROM action WHERE id=?", arguments: [stableID]) {
-                let owner: String? = existing["matterID"]
-                guard owner == draft.id else { throw LibraryDataError.invalidAction }
-            }
-            let state: String
-            let reminder: Date?
-            if ["done", "cancelled"].contains(action.state) {
-                state = action.state
-                reminder = nil
-            } else if !action.dateConfirmed || action.remindAt == nil {
-                state = "needs_date"
-                reminder = nil
-            } else {
-                state = action.state == "needs_date" ? "active" : action.state
-                reminder = action.remindAt
-            }
-            try db.execute(sql: """
-                INSERT INTO action(id, matterID, title, dueDate, remindAt, state, dateConfirmed, createdAt, updatedAt)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(id) DO UPDATE SET title=excluded.title, dueDate=excluded.dueDate,
-                    remindAt=excluded.remindAt, state=excluded.state, dateConfirmed=excluded.dateConfirmed,
-                    updatedAt=excluded.updatedAt
-                """, arguments: [stableID, draft.id, action.title.trimmingCharacters(in: .whitespacesAndNewlines),
-                    action.dueDate, reminder, state, action.dateConfirmed, now, now])
-            return try Self.fetchAction(db, id: stableID)
+            return try draft.actions.map { try Self.saveAction(db, draft: $0, matterID: draft.id, now: now) }
         }
+    }
+
+    func saveAction(_ draft: ActionDraft, matterID: String) async throws -> ActionRecord {
+        try Self.validateAction(draft)
+        return try await queue.write { db in
+            try Self.saveAction(db, draft: draft, matterID: matterID, now: Date())
+        }
+    }
+
+    private static func validateAction(_ action: ActionDraft) throws {
+        guard !action.id.isEmpty, !action.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              ["needs_date", "active", "done", "cancelled"].contains(action.state),
+              action.dueDate?.timeIntervalSince1970.isFinite != false,
+              action.remindAt?.timeIntervalSince1970.isFinite != false else {
+            throw LibraryDataError.invalidAction
+        }
+    }
+
+    private static func saveAction(_ db: Database, draft: ActionDraft, matterID: String, now: Date) throws -> ActionRecord {
+        let existing = try fetchAction(db, id: draft.id)
+        guard existing == nil || existing?.matterID == matterID else { throw LibraryDataError.invalidAction }
+        var cleaned = draft
+        cleaned.title = draft.title.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !draft.dateConfirmed || draft.remindAt == nil {
+            cleaned.dateConfirmed = false
+            cleaned.remindAt = nil
+            if !["done", "cancelled"].contains(draft.state) { cleaned.state = "needs_date" }
+        } else if draft.state == "needs_date" { cleaned.state = "active" }
+        if let existing, ActionDraft(existing) == cleaned { return existing }
+        try db.execute(sql: """
+            INSERT INTO action(id, matterID, title, dueDate, remindAt, state, dateConfirmed, createdAt, updatedAt)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET title=excluded.title, dueDate=excluded.dueDate,
+                remindAt=excluded.remindAt, state=excluded.state, dateConfirmed=excluded.dateConfirmed,
+                updatedAt=excluded.updatedAt
+            """, arguments: [cleaned.id, matterID, cleaned.title, cleaned.dueDate, cleaned.remindAt,
+                cleaned.state, cleaned.dateConfirmed, now, now])
+        guard let saved = try fetchAction(db, id: draft.id) else { throw LibraryDataError.invalidAction }
+        return saved
     }
 
     func setActionState(id: String, state: String) async throws {

@@ -246,8 +246,8 @@ final class FullTextTests: XCTestCase {
         for kind in ["order", "contract", "warranty", "subscription"] {
             let draft = MatterDraft(id: kind, kind: kind, title: "合成 \(kind)", itemIDs: [item.id], facts: [
                 FactDraft(key: "end_date", valueText: "2027-10-28", valueType: "date", state: "confirmed")
-            ], action: ActionDraft(id: "action-" + kind, title: "人工确认的跟进",
-                remindAt: Date(timeIntervalSince1970: 1_900_000_000), state: "active", dateConfirmed: true))
+            ], actions: [ActionDraft(id: "action-" + kind, title: "人工确认的跟进",
+                remindAt: Date(timeIntervalSince1970: 1_900_000_000), state: "active", dateConfirmed: true)])
             try await database.saveMatter(draft)
         }
         let reopened = try LibraryDatabase(path: path)

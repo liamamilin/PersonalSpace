@@ -11,6 +11,7 @@ final class LibraryModel: ObservableObject {
     @Published var matterFacts: [FactRecord] = []
     @Published var matterFiles: [LibraryFile] = []
     @Published var pendingActionIDs: Set<String> = []
+    @Published var pendingReminderDates: [String: Date] = [:]
     @Published var deliveredActionIDs: Set<String> = []
     @Published var reminderMessage: String?
     @Published var showMatterEditor = false
@@ -635,16 +636,14 @@ final class LibraryModel: ObservableObject {
                     state: $0.state, sourceItemID: $0.sourceItemID,
                     sourceExcerpt: $0.sourceExcerpt, origin: $0.origin)
             }
-            if let action = actions.first {
-                draft.action = ActionDraft(id: action.id, title: action.title, dueDate: action.dueDate,
-                    remindAt: action.remindAt, state: action.state, dateConfirmed: action.dateConfirmed)
-            }
+            draft.actions = actions.map(ActionDraft.init)
             matterDraft = draft
             showMatterEditor = true
         } catch { errorMessage = "无法读取事务，请重试。" }
     }
 
-    func showMatter(_ id: String) async {
+    func showMatter(_ id: String, actionID: String? = nil) async {
+        selectedActionID = actionID
         search = ""
         selectedFileID = nil
         selectedSourceID = "matters"
@@ -660,7 +659,7 @@ final class LibraryModel: ObservableObject {
                 return
             }
             selectedActionID = id
-            if let matterID = action.matterID { await showMatter(matterID) }
+            if let matterID = action.matterID { await showMatter(matterID, actionID: id) }
             else { selectedSourceID = "actions"; await reload() }
         } catch { errorMessage = "无法打开提醒对应的行动，请在待办中查看。" }
     }
@@ -684,30 +683,60 @@ final class LibraryModel: ObservableObject {
 
     func saveMatter(_ draft: MatterDraft) async -> Bool {
         guard let database else { return false }
-        if let action = draft.action, action.dateConfirmed,
-           !["done", "cancelled"].contains(action.state),
-           action.remindAt.map({ $0 <= Date() }) != false {
-            errorMessage = "请为已确认的提醒选择一个未来时间。"
-            return false
-        }
         do {
             let previous = try await database.actions(matterID: draft.id)
-            let saved = try await database.saveMatter(draft)
-            // Only a successful database save may replace or cancel a system request.
-            for action in previous where action.id != saved?.id {
-                _ = await reminders.apply(actionID: action.id, title: action.title,
-                    remindAt: nil, dateConfirmed: false, state: "cancelled")
+            for action in draft.actions {
+                try validateReminder(action, previous: previous.first { $0.id == action.id })
             }
-            if let saved {
-                reminderMessage = await reminders.apply(actionID: saved.id, title: saved.title,
-                    remindAt: saved.remindAt, dateConfirmed: saved.dateConfirmed, state: saved.state).message
-            } else { reminderMessage = previous.isEmpty ? "事务已保存。" : "事务已保存，原系统提醒已取消。" }
+            let saved = try await database.saveMatter(draft)
+            for action in saved {
+                await updateReminder(action, previous: previous.first { $0.id == action.id })
+            }
+            if saved.isEmpty { reminderMessage = "事务已保存，已有行动与提醒保持不变。" }
             await reload()
             await showMatter(draft.id)
             await refreshReminderStatus(updateMessage: false)
+            errorMessage = nil
             return true
         } catch {
             errorMessage = (error as? LocalizedError)?.errorDescription ?? "保存事务失败，请检查字段后重试。"
+            return false
+        }
+    }
+
+    private func validateReminder(_ draft: ActionDraft, previous: ActionRecord?) throws {
+        guard !["done", "cancelled"].contains(draft.state), draft.dateConfirmed else { return }
+        let changed = previous?.remindAt != draft.remindAt || previous?.dateConfirmed != true
+            || previous?.state != "active"
+        if changed, draft.remindAt.map({ $0 > Date() }) != true {
+            throw ReminderEditError.futureTimeRequired
+        }
+    }
+
+    private func updateReminder(_ saved: ActionRecord, previous: ActionRecord?) async {
+        guard previous == nil || previous?.remindAt != saved.remindAt
+                || previous?.dateConfirmed != saved.dateConfirmed || previous?.state != saved.state else {
+            reminderMessage = "行动已保存，原提醒保持不变。"
+            return
+        }
+        reminderMessage = await reminders.apply(actionID: saved.id, title: saved.title,
+            remindAt: saved.remindAt, dateConfirmed: saved.dateConfirmed, state: saved.state).message
+    }
+
+    func saveAction(_ draft: ActionDraft, matterID: String) async -> Bool {
+        guard let database else { return false }
+        do {
+            let previous = try await database.action(id: draft.id)
+            try validateReminder(draft, previous: previous)
+            let saved = try await database.saveAction(draft, matterID: matterID)
+            await updateReminder(saved, previous: previous)
+            selectedActionID = saved.id
+            await reload()
+            await refreshReminderStatus(updateMessage: false)
+            errorMessage = nil
+            return true
+        } catch {
+            errorMessage = (error as? LocalizedError)?.errorDescription ?? "保存行动失败，请重试。"
             return false
         }
     }
@@ -726,9 +755,12 @@ final class LibraryModel: ObservableObject {
     }
 
     func refreshReminderStatus(updateMessage: Bool = true) async {
-        async let pending = reminders.pendingActionIDs()
+        async let pending = reminders.pendingReminders()
         async let delivered = reminders.deliveredActionIDs()
-        (pendingActionIDs, deliveredActionIDs) = await (pending, delivered)
+        let (requests, received) = await (pending, delivered)
+        pendingActionIDs = Set(requests.keys)
+        pendingReminderDates = requests
+        deliveredActionIDs = received
         if updateMessage { reminderMessage = await reminders.permissionMessage() }
     }
 
@@ -862,4 +894,9 @@ private enum DocumentReadError: LocalizedError {
     var errorDescription: String? {
         "照片或已标记敏感的资料不读取正文、不交给模型处理。可手动填写必要字段；普通文件的隐私标记可在详情中调整。"
     }
+}
+
+private enum ReminderEditError: LocalizedError {
+    case futureTimeRequired
+    var errorDescription: String? { "请为已确认的提醒选择一个未来时间。" }
 }

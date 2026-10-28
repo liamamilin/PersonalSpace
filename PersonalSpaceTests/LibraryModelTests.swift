@@ -55,4 +55,20 @@ final class LibraryModelTests: XCTestCase {
         XCTAssertEqual(model.files.first?.sourceID, "cancel-source")
         XCTAssertEqual(model.total, 1)
     }
+    func testRenamingExistingActionPreservesReminderAndShowsCurrentSaveMessage() async throws {
+        let database = try LibraryDatabase(path: ":memory:")
+        let old = ActionDraft(id: "legacy-single", title: "旧行动", remindAt: Date(timeIntervalSince1970: 1_900_000_000), state: "active", dateConfirmed: true)
+        try await database.saveMatter(MatterDraft(id: "legacy", title: "旧单行动事务", actions: [old]))
+        let model = LibraryModel(database: database)
+        model.reminderMessage = "行动已取消，系统提醒已取消。"
+        var edited = old
+        edited.title = "修改标题"
+        let result = await model.saveAction(edited, matterID: "legacy")
+        let saved = try await database.action(id: edited.id)
+        XCTAssertTrue(result)
+        XCTAssertEqual(saved?.remindAt, old.remindAt)
+        XCTAssertEqual(saved?.state, "active")
+        XCTAssertEqual(model.reminderMessage, "行动已保存，原提醒保持不变。")
+    }
+
 }

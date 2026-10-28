@@ -119,14 +119,16 @@ struct MattersView: View {
 struct MatterDetailView: View {
     @EnvironmentObject private var model: LibraryModel
     @State private var busyActionID: String?
+    @State private var editingAction: ActionDraft?
 
     private var relatedActions: [ActionRecord] {
         model.actions.filter { $0.matterID == model.selectedMatterID }
-            .sorted { $0.createdAt < $1.createdAt }
+
     }
 
     var body: some View {
         if let matter = model.selectedMatter {
+            ScrollViewReader { proxy in
             ScrollView {
                 VStack(alignment: .leading, spacing: 20) {
                     VStack(alignment: .leading, spacing: 8) {
@@ -199,30 +201,22 @@ struct MatterDetailView: View {
                             VStack(alignment: .leading, spacing: 8) {
                                 Text(action.title).font(.subheadline.bold()).textSelection(.enabled)
                                 Text(ActionLabels.stateTitle(action.state)).font(.caption).foregroundStyle(.secondary)
-                                if let date = action.remindAt, action.dateConfirmed {
-                                    Label(date.formatted(date: .abbreviated, time: .shortened), systemImage: "calendar")
-                                        .font(.callout)
-                                } else {
-                                    Text("尚未确认具体提醒时间").font(.callout).foregroundStyle(.secondary)
-                                }
-                                if action.state == "active" {
-                                    let pending = model.pendingActionIDs.contains(action.id)
-                                    let delivered = model.deliveredActionIDs.contains(action.id)
-                                    Label(pending ? "已安排系统提醒" : delivered ? "已送达通知中心" : "当前没有待发送通知",
-                                          systemImage: pending ? "bell.badge" : delivered ? "bell" : "bell.slash")
-                                        .font(.caption).foregroundStyle(.secondary)
-                                }
+                                ActionTimingView(action: action)
+                                Button("编辑行动", systemImage: "pencil") { editingAction = ActionDraft(action) }
+                                    .controlSize(.small)
                                 if action.state == "active" || action.state == "needs_date" {
                                     HStack {
                                         Button("标记完成", systemImage: "checkmark") { update(action, state: "done") }
                                         Button("取消行动") { update(action, state: "cancelled") }
                                     }.controlSize(.small).disabled(busyActionID != nil)
-                                } else {
-                                    Button("编辑并重新启用") { Task { await model.editMatter(matter) } }
-                                        .controlSize(.small)
                                 }
-                            }.padding(.vertical, 4)
+                            }.padding(8)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .background(model.selectedActionID == action.id ? Color.accentColor.opacity(0.12) : Color.clear)
+                                .clipShape(RoundedRectangle(cornerRadius: 6))
+                                .id(action.id)
                         }
+                        Button("添加行动", systemImage: "plus") { editingAction = ActionDraft() }
                         if let message = model.reminderMessage {
                             Text(message).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
                         }
@@ -235,6 +229,16 @@ struct MatterDetailView: View {
                         }
                     }
                 }.frame(maxWidth: .infinity, alignment: .leading).padding(20)
+            }
+            .task(id: "\(matter.id)|\(model.selectedActionID ?? "")|\(relatedActions.map(\.id))") {
+                if let id = model.selectedActionID, relatedActions.contains(where: { $0.id == id }) {
+                    await Task.yield()
+                    proxy.scrollTo(id, anchor: .center)
+                }
+            }
+            }
+            .sheet(item: $editingAction) { action in
+                ActionEditorView(draft: action) { await model.saveAction($0, matterID: matter.id) }
             }
         } else {
             ContentUnavailableView("选择一条事务", systemImage: "doc.text",
@@ -253,6 +257,9 @@ struct MatterDetailView: View {
 
 struct ActionsView: View {
     @EnvironmentObject private var model: LibraryModel
+    @State private var editingAction: ActionDraft?
+    @State private var editingMatterID: String?
+    @State private var showFinished = false
 
     private var filtered: [ActionRecord] {
         model.actions.filter {
@@ -274,15 +281,29 @@ struct ActionsView: View {
             } else if filtered.isEmpty {
                 ContentUnavailableView.search(text: model.search)
             } else {
+                VStack(spacing: 0) {
+                Toggle("显示已完成和已取消", isOn: $showFinished).toggleStyle(.checkbox)
+                    .frame(maxWidth: .infinity, alignment: .leading).padding(12)
                 List(selection: $model.selectedActionID) {
                     actionSection("即将处理", state: "active")
                     actionSection("需要确认日期", state: "needs_date")
-                    actionSection("已完成", state: "done")
-                    actionSection("已取消", state: "cancelled")
+                    if showFinished {
+                        actionSection("已完成", state: "done")
+                        actionSection("已取消", state: "cancelled")
+                    }
+                    if !showFinished && filtered.allSatisfy({ ["done", "cancelled"].contains($0.state) }) {
+                        Text("暂无待处理行动").foregroundStyle(.secondary)
+                    }
                 }.listStyle(.inset)
+                }
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .sheet(item: $editingAction) { action in
+            if let matterID = editingMatterID {
+                ActionEditorView(draft: action) { await model.saveAction($0, matterID: matterID) }
+            }
+        }
         .onChange(of: model.selectedActionID) { _, id in
             model.selectedMatterID = model.actions.first(where: { $0.id == id })?.matterID
             Task { await model.loadMatterDetails() }
@@ -306,16 +327,21 @@ struct ActionsView: View {
                         if let matterTitle = action.matterTitle {
                             Text(matterTitle).font(.caption).foregroundStyle(.secondary).lineLimit(1)
                         }
-                        if let date = action.remindAt, action.dateConfirmed {
-                            Text(date.formatted(date: .abbreviated, time: .shortened))
-                                .font(.caption).foregroundStyle(.secondary)
-                        } else {
-                            Text("等待确认具体日期").font(.caption).foregroundStyle(.secondary)
-                        }
+                        ActionTimingView(action: action)
+                        HStack {
+                            Button("编辑行动") {
+                                editingMatterID = action.matterID
+                                editingAction = ActionDraft(action)
+                            }
+                            if ["active", "needs_date"].contains(action.state) {
+                                Button("完成") { Task { await model.setActionState(action, state: "done") } }
+                                Button("取消行动") { Task { await model.setActionState(action, state: "cancelled") } }
+                            }
+                        }.controlSize(.small).buttonStyle(.borderless)
                     }.padding(.vertical, 5).tag(action.id)
                         .contextMenu {
                             if let matterID = action.matterID {
-                                Button("查看事务") { Task { await model.showMatter(matterID) } }
+                                Button("查看事务") { Task { await model.showMatter(matterID, actionID: action.id) } }
                             }
                             if state == "active" || state == "needs_date" {
                                 Button("标记完成") { Task { await model.setActionState(action, state: "done") } }
@@ -323,7 +349,7 @@ struct ActionsView: View {
                             }
                         }
                         .onTapGesture(count: 2) {
-                            if let matterID = action.matterID { Task { await model.showMatter(matterID) } }
+                            if let matterID = action.matterID { Task { await model.showMatter(matterID, actionID: action.id) } }
                         }
                 }
             }
@@ -335,9 +361,8 @@ struct MatterEditorView: View {
     @EnvironmentObject private var model: LibraryModel
     @Environment(\.dismiss) private var dismiss
     @State private var draft: MatterDraft
-    @State private var action: ActionDraft
-    @State private var hasAction: Bool
-    @State private var reminderDate: Date
+    private let originalActions: [ActionDraft]
+    @State private var editingAction: ActionDraft?
     @State private var knownFiles: [String: LibraryFile] = [:]
     @State private var showFilePicker = false
     @State private var recognitionFileID: String?
@@ -360,14 +385,8 @@ struct MatterEditorView: View {
         for key in kind.fieldKeys where !editable.facts.contains(where: { $0.key == key }) {
             editable.facts.append(FactDraft(key: key, valueType: MatterKind.valueType(for: key)))
         }
-        var editableAction = draft.action ?? ActionDraft(title: kind.defaultActionTitle)
-        // A completed/cancelled action may retain its due date after its system reminder was removed.
-        // Re-enabling it must not silently confirm a newly generated default reminder time.
-        if editableAction.remindAt == nil { editableAction.dateConfirmed = false }
+        originalActions = draft.actions
         _draft = State(initialValue: editable)
-        _action = State(initialValue: editableAction)
-        _hasAction = State(initialValue: draft.action != nil)
-        _reminderDate = State(initialValue: draft.action?.remindAt ?? draft.action?.dueDate ?? Date().addingTimeInterval(3_600))
         _recognitionFileID = State(initialValue: draft.itemIDs.first)
     }
 
@@ -379,14 +398,8 @@ struct MatterEditorView: View {
         draft.facts.filter { !kind.fieldKeys.contains($0.key) && !$0.valueText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
             .map(\.key)
     }
-    private var finishedAction: Bool { action.state == "done" || action.state == "cancelled" }
-    private var invalidReminder: Bool {
-        hasAction && !finishedAction && action.dateConfirmed && reminderDate <= Date()
-    }
     private var canSave: Bool {
         !saving && !processingText && !draft.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            && (!hasAction || !action.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-            && !invalidReminder
     }
 
     var body: some View {
@@ -493,31 +506,29 @@ struct MatterEditorView: View {
                     }
                 }
                 Section {
-                    Toggle("为这份" + kind.title + "保存一个行动", isOn: $hasAction)
-                    if hasAction {
-                        TextField("行动", text: $action.title, prompt: Text(kind.defaultActionTitle))
-                            .accessibilityIdentifier("action-title")
-                        if finishedAction {
-                            HStack {
-                                Text("当前状态：" + ActionLabels.stateTitle(action.state)).foregroundStyle(.secondary)
-                                Spacer()
-                                Button("重新启用行动") { action.state = action.dateConfirmed ? "active" : "needs_date" }
+                    if draft.actions.isEmpty {
+                        Text("尚无行动。可添加多条独立行动，日期未知时先保存为待补日期。")
+                            .foregroundStyle(.secondary)
+                    }
+                    ForEach(draft.actions) { action in
+                        HStack(alignment: .top) {
+                            VStack(alignment: .leading, spacing: 5) {
+                                Text(action.title).font(.headline)
+                                Text(ActionLabels.stateTitle(action.state)).font(.caption).foregroundStyle(.secondary)
+                                if let date = action.remindAt, action.dateConfirmed {
+                                    Text("提醒：" + date.formatted(date: .abbreviated, time: .shortened))
+                                        .font(.caption).foregroundStyle(.secondary)
+                                }
                             }
-                        }
-                        Toggle("我已确认具体提醒日期和时间", isOn: $action.dateConfirmed)
-                            .accessibilityIdentifier("action-date-confirmed")
-                        if action.dateConfirmed {
-                            DatePicker("提醒时间", selection: $reminderDate, displayedComponents: [.date, .hourAndMinute])
-                                .accessibilityIdentifier("action-reminder-date")
-                            if invalidReminder {
-                                Text("请选择未来的具体时间。仅修改事实日期不会建立提醒。")
-                                    .font(.caption).foregroundStyle(.orange)
+                            Spacer()
+                            Button("编辑") { editingAction = action }
+                            if ["active", "needs_date"].contains(action.state) {
+                                Button("完成") { changeAction(action, state: "done") }
+                                Button("取消行动") { changeAction(action, state: "cancelled") }
                             }
-                        } else {
-                            Text("保存为「待补日期」，不会安排系统通知。")
-                                .font(.caption).foregroundStyle(.secondary)
                         }
                     }
+                    Button("添加行动", systemImage: "plus") { editingAction = ActionDraft(title: kind.defaultActionTitle) }
                 } header: {
                     Text("行动与系统提醒")
                 } footer: {
@@ -562,10 +573,16 @@ struct MatterEditorView: View {
             for key in newKind.fieldKeys where !draft.facts.contains(where: { $0.key == key }) {
                 draft.facts.append(FactDraft(key: key, valueType: MatterKind.valueType(for: key)))
             }
-            if action.title == (MatterKind(rawValue: previous) ?? .order).defaultActionTitle {
-                action.title = newKind.defaultActionTitle
+        }
+        .sheet(item: $editingAction) { action in
+            ActionEditorView(draft: action) { edited in
+                if let index = draft.actions.firstIndex(where: { $0.id == edited.id }) {
+                    draft.actions[index] = edited
+                } else { draft.actions.append(edited) }
+                return true
             }
         }
+
         .onDisappear {
             recognitionTask?.cancel(); recognitionTask = nil
             assistantTask?.cancel(); assistantTask = nil
@@ -711,17 +728,16 @@ struct MatterEditorView: View {
         }
     }
 
+    private func changeAction(_ action: ActionDraft, state: String) {
+        if let index = draft.actions.firstIndex(where: { $0.id == action.id }) { draft.actions[index].state = state }
+    }
+
     private func save() {
         guard canSave else { return }
         var savedDraft = draft
-        if hasAction {
-            var savedAction = action
-            savedAction.remindAt = action.dateConfirmed ? reminderDate : nil
-            savedAction.dueDate = action.dateConfirmed ? reminderDate : nil
-            if !finishedAction { savedAction.state = action.dateConfirmed ? "active" : "needs_date" }
-            savedDraft.action = savedAction
-        } else {
-            savedDraft.action = nil
+        // Metadata edits submit only actions changed in this editor; other rows stay untouched.
+        savedDraft.actions = draft.actions.filter { edited in
+            originalActions.first(where: { $0.id == edited.id }) != edited
         }
         saving = true
         Task {

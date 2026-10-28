@@ -69,7 +69,7 @@ struct MatterDraft: Sendable {
     var notes = ""
     var itemIDs: [String] = []
     var facts: [FactDraft] = []
-    var action: ActionDraft? = nil
+    var actions: [ActionDraft] = []
 }
 
 struct FactDraft: Identifiable, Sendable, Equatable {
@@ -84,6 +84,17 @@ struct FactDraft: Identifiable, Sendable, Equatable {
 }
 
 struct ActionDraft: Identifiable, Sendable, Equatable {
+    init(id: String = UUID().uuidString, title: String = "", dueDate: Date? = nil, remindAt: Date? = nil,
+         state: String = "needs_date", dateConfirmed: Bool = false) {
+        self.id = id; self.title = title; self.dueDate = dueDate; self.remindAt = remindAt
+        self.state = state; self.dateConfirmed = dateConfirmed
+    }
+
+    init(_ record: ActionRecord) {
+        self.init(id: record.id, title: record.title, dueDate: record.dueDate, remindAt: record.remindAt,
+                  state: record.state, dateConfirmed: record.dateConfirmed)
+    }
+
     var id = UUID().uuidString
     var title = ""
     var dueDate: Date? = nil

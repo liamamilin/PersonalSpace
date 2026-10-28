@@ -101,13 +101,21 @@ final class ReminderController: NSObject, ObservableObject, UNUserNotificationCe
         }
     }
 
-    func pendingActionIDs() async -> Set<String> {
+    func pendingReminders() async -> [String: Date] {
         let requests = await center.pendingNotificationRequests()
-        return Set(requests.compactMap { request in
-            let prefix = "action."
-            guard request.identifier.hasPrefix(prefix) else { return nil }
-            return String(request.identifier.dropFirst(prefix.count))
-        })
+        var pending: [String: Date] = [:]
+        for request in requests {
+            guard let actionID = request.content.userInfo["actionID"] as? String,
+                  request.identifier == Self.identifier(for: actionID),
+                  let trigger = request.trigger as? UNCalendarNotificationTrigger,
+                  let date = trigger.nextTriggerDate() else { continue }
+            pending[actionID] = date
+        }
+        return pending
+    }
+
+    func pendingActionIDs() async -> Set<String> {
+        Set(await pendingReminders().keys)
     }
 
     func deliveredActionIDs() async -> Set<String> {

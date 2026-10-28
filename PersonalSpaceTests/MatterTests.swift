@@ -148,8 +148,8 @@ final class MatterTests: XCTestCase {
         let fact = FactDraft(id: "purchase-date", key: "purchaseDate", valueText: "2026-10-28",
             valueType: "date", sourceItemID: item.id, sourceExcerpt: "购买日期：2026-10-28", origin: "ocr")
         let draft = MatterDraft(id: "order", title: "设备订单", notes: "人工复核前",
-            itemIDs: [item.id], facts: [fact], action: ActionDraft(id: "follow-up", title: "检查售后日期"))
-        let action = try await database.saveMatter(draft)
+            itemIDs: [item.id], facts: [fact], actions: [ActionDraft(id: "follow-up", title: "检查售后日期")])
+        let action = try await database.saveMatter(draft).first
         XCTAssertEqual(action?.state, "needs_date")
         XCTAssertNil(action?.dueDate)
         XCTAssertNil(action?.remindAt)
@@ -184,31 +184,31 @@ final class MatterTests: XCTestCase {
         let database = try LibraryDatabase(path: ":memory:")
         let requested = Date(timeIntervalSince1970: 1_900_000_000)
         for state in ["needs_date", "active"] {
-            let draft = MatterDraft(id: state, title: "手工订单 \(state)", action: ActionDraft(
+            let draft = MatterDraft(id: state, title: "手工订单 \(state)", actions: [ActionDraft(
                 title: "待补充日期", dueDate: requested, remindAt: requested,
-                state: state, dateConfirmed: false))
-            let action = try await database.saveMatter(draft)
+                state: state, dateConfirmed: false)])
+            let action = try await database.saveMatter(draft).first
             XCTAssertEqual(action?.state, "needs_date")
             XCTAssertNil(action?.remindAt)
             XCTAssertEqual(action?.dateConfirmed, false)
         }
-        let draft = MatterDraft(id: "no-time", title: "没有具体提醒时间", action: ActionDraft(
-            title: "补充提醒时间", state: "active", dateConfirmed: true))
-        let noTime = try await database.saveMatter(draft)
+        let draft = MatterDraft(id: "no-time", title: "没有具体提醒时间", actions: [ActionDraft(
+            title: "补充提醒时间", state: "active", dateConfirmed: true)])
+        let noTime = try await database.saveMatter(draft).first
         XCTAssertEqual(noTime?.state, "needs_date")
         XCTAssertNil(noTime?.remindAt)
     }
 
-    func testEditingKeepsActionIDAndRemovingActionCancelsOldRow() async throws {
+    func testEditingKeepsActionIDAndOmittedActionsStayUnchanged() async throws {
         let database = try LibraryDatabase(path: ":memory:")
         let firstTime = Date(timeIntervalSince1970: 1_900_000_000)
-        var draft = MatterDraft(id: "order", title: "我的订单", action: ActionDraft(id: "stable-action",
-            title: "第一次提醒", remindAt: firstTime, state: "active", dateConfirmed: true))
-        let first = try await database.saveMatter(draft)
+        var draft = MatterDraft(id: "order", title: "我的订单", actions: [ActionDraft(id: "stable-action",
+            title: "第一次提醒", remindAt: firstTime, state: "active", dateConfirmed: true)])
+        let first = try await database.saveMatter(draft).first
         draft.title = "已修改的订单"
-        draft.action = ActionDraft(id: "new-draft-uuid", title: "改后的提醒",
+        draft.actions[0] = ActionDraft(id: "stable-action", title: "改后的提醒",
             remindAt: firstTime.addingTimeInterval(3600), state: "active", dateConfirmed: true)
-        let edited = try await database.saveMatter(draft)
+        let edited = try await database.saveMatter(draft).first
         let allActions = try await database.actions(matterID: "order")
         XCTAssertEqual(edited?.id, "stable-action")
         XCTAssertEqual(edited?.createdAt, first?.createdAt)
@@ -216,40 +216,40 @@ final class MatterTests: XCTestCase {
         XCTAssertEqual(edited?.matterTitle, "已修改的订单")
         XCTAssertEqual(allActions.count, 1)
 
-        draft.action = nil
+        draft.actions = []
         let removed = try await database.saveMatter(draft)
         let cancelled = try await database.action(id: "stable-action")
-        XCTAssertNil(removed)
-        XCTAssertEqual(cancelled?.state, "cancelled")
+        XCTAssertEqual(removed.count, 0)
+        XCTAssertEqual(cancelled?.state, "active")
         XCTAssertEqual(cancelled?.matterID, "order")
     }
 
     func testCompletingAndCancellingActionsKeepStableRecords() async throws {
         let database = try LibraryDatabase(path: ":memory:")
-        let draft = MatterDraft(id: "order", title: "手工订单", action: ActionDraft(id: "action",
+        let draft = MatterDraft(id: "order", title: "手工订单", actions: [ActionDraft(id: "action",
             title: "跟进售后", remindAt: Date(timeIntervalSince1970: 1_900_000_000),
-            state: "active", dateConfirmed: true))
+            state: "active", dateConfirmed: true)])
         try await database.saveMatter(draft)
         try await database.setActionState(id: "action", state: "done")
         let done = try await database.action(id: "action")
         XCTAssertEqual(done?.state, "done")
         var edited = draft
         edited.title = "编辑已完成订单"
-        edited.action?.state = "done"
-        edited.action?.dateConfirmed = false
-        let editedDone = try await database.saveMatter(edited)
+        edited.actions[0].state = "done"
+        edited.actions[0].dateConfirmed = false
+        let editedDone = try await database.saveMatter(edited).first
         XCTAssertEqual(editedDone?.state, "done")
         XCTAssertNil(editedDone?.remindAt)
         try await database.setActionState(id: "action", state: "cancelled")
         let cancelled = try await database.action(id: "action")
         XCTAssertEqual(cancelled?.state, "cancelled")
         XCTAssertEqual(cancelled?.id, "action")
-        edited.action?.state = "cancelled"
-        let editedCancelled = try await database.saveMatter(edited)
+        edited.actions[0].state = "cancelled"
+        let editedCancelled = try await database.saveMatter(edited).first
         XCTAssertEqual(editedCancelled?.state, "cancelled")
         XCTAssertNil(editedCancelled?.remindAt)
 
-        let unknown = MatterDraft(id: "unknown", title: "日期未知", action: ActionDraft(id: "unknown-action", title: "补充日期"))
+        let unknown = MatterDraft(id: "unknown", title: "日期未知", actions: [ActionDraft(id: "unknown-action", title: "补充日期")])
         try await database.saveMatter(unknown)
         try await database.setActionState(id: "unknown-action", state: "active")
         let stillUnknown = try await database.action(id: "unknown-action")
@@ -264,9 +264,9 @@ final class MatterTests: XCTestCase {
         let item = try await evidence(database: database, root: root)
         let fact = FactDraft(id: "date", key: "purchaseDate", valueText: "2024-02-29", valueType: "date", state: "confirmed")
         let original = MatterDraft(id: "order", title: "保存前的标题", itemIDs: [item.id], facts: [fact],
-            action: ActionDraft(id: "stable", title: "已确认提醒", remindAt: Date(timeIntervalSince1970: 1_900_000_000),
-                                state: "active", dateConfirmed: true))
-        let initialAction = try await database.saveMatter(original)
+            actions: [ActionDraft(id: "stable", title: "已确认提醒", remindAt: Date(timeIntervalSince1970: 1_900_000_000),
+                                state: "active", dateConfirmed: true)])
+        let initialAction = try await database.saveMatter(original).first
         let initialMatter = try await database.matter(id: "order")
         let initialFacts = try await database.facts(matterID: "order")
 
@@ -309,7 +309,7 @@ final class MatterTests: XCTestCase {
             FactDraft(key: "purchaseDate", valueText: " \n", valueType: "date"),
             FactDraft()
         ])
-        let action = try await database.saveMatter(draft)
+        let action = try await database.saveMatter(draft).first
         let saved = try await database.matter(id: "manual")
         let facts = try await database.facts(matterID: "manual")
         let files = try await database.files(FileQuery(matterID: "manual"))
@@ -321,4 +321,65 @@ final class MatterTests: XCTestCase {
         XCTAssertEqual(facts.first?.origin, "user")
         XCTAssertEqual(facts.first?.state, "confirmed")
     }
+    func testMultipleActionsRemainIndependentAcrossEditsAndRestart() async throws {
+        let root = try workspace()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let path = root.appendingPathComponent("multi.sqlite").path
+        let database = try LibraryDatabase(path: path)
+        let item = try await evidence(database: database, root: root)
+        let time = Date(timeIntervalSince1970: 1_900_000_000)
+        var draft = MatterDraft(id: "computer", title: "我的电脑", itemIDs: [item.id], actions: [
+            ActionDraft(id: "return", title: "检查退货", remindAt: time, state: "active", dateConfirmed: true),
+            ActionDraft(id: "warranty", title: "检查保修", remindAt: time.addingTimeInterval(3600), state: "active", dateConfirmed: true),
+            ActionDraft(id: "care", title: "检查 AppleCare")
+        ])
+        try await database.saveMatter(draft)
+        let originalB = try await database.action(id: "warranty")
+        let before = try await database.actions(matterID: draft.id)
+        XCTAssertEqual(before.count, 3)
+        draft.actions[0].remindAt = time.addingTimeInterval(600)
+        draft.actions = [draft.actions[0]]
+        try await database.saveMatter(draft)
+        let unchangedB = try await database.action(id: "warranty")
+        XCTAssertEqual(unchangedB, originalB)
+        try await database.setActionState(id: "return", state: "done")
+        let third = ActionDraft(id: "care", title: "检查 AppleCare", remindAt: time.addingTimeInterval(7200), state: "active", dateConfirmed: true)
+        try await database.saveAction(third, matterID: draft.id)
+        draft.actions = []
+        draft.title = "我的电脑（已校对）"
+        draft.facts = [FactDraft(key: "product", valueText: "合成电脑", state: "confirmed")]
+        try await database.saveMatter(draft)
+        let reopened = try LibraryDatabase(path: path)
+        let all = try await reopened.actions(matterID: draft.id)
+        XCTAssertEqual(Set(all.map(\.id)), ["return", "warranty", "care"])
+        XCTAssertEqual(all.first { $0.id == "return" }?.state, "done")
+        XCTAssertEqual(all.first { $0.id == "warranty" }?.remindAt, originalB?.remindAt)
+        XCTAssertEqual(all.first { $0.id == "warranty" }?.updatedAt, originalB?.updatedAt)
+        XCTAssertEqual(all.first { $0.id == "care" }?.remindAt, third.remindAt)
+        try await reopened.setActionState(id: "warranty", state: "cancelled")
+        let remaining = try await reopened.action(id: "care")
+        XCTAssertEqual(remaining?.state, "active")
+        XCTAssertEqual(remaining?.remindAt, third.remindAt)
+    }
+
+    func testDuplicateAndForeignActionIDsRollBackWholeMatterEdit() async throws {
+        let database = try LibraryDatabase(path: ":memory:")
+        let a = ActionDraft(id: "a", title: "原行动")
+        var draft = MatterDraft(id: "one", title: "原事务", actions: [a])
+        try await database.saveMatter(draft)
+        draft.title = "不应保存"
+        draft.actions = [a, a]
+        await expectSaveFailure(draft, database: database)
+        let second = MatterDraft(id: "two", title: "其它事务", actions: [ActionDraft(id: "b", title: "其它行动")])
+        try await database.saveMatter(second)
+        draft.actions = [ActionDraft(id: "b", title: "不应挪用")]
+        await expectSaveFailure(draft, database: database)
+        let matter = try await database.matter(id: "one")
+        let action = try await database.action(id: "a")
+        let foreign = try await database.action(id: "b")
+        XCTAssertEqual(matter?.title, "原事务")
+        XCTAssertEqual(action?.title, "原行动")
+        XCTAssertEqual(foreign?.matterID, "two")
+    }
+
 }
