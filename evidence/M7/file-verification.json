@@ -1,0 +1,59 @@
+{
+  "originalsUnchanged": true,
+  "originals": [
+    {
+      "name": "M7-收纳订单.pdf",
+      "bytes": 763,
+      "modifiedNS": 1793188680149109930,
+      "sha256": "f37f5a89ca3265a7835ebadbef7f6093327adcd570836708436bf908e1e77571"
+    },
+    {
+      "name": "M7-整理说明.txt",
+      "bytes": 179,
+      "modifiedNS": 1793188680281005656,
+      "sha256": "cae428dda7bc35f4badef66ceb3ac72df5f1bf4d94fa8441d264eb0b083a6597"
+    },
+    {
+      "name": "M7-设备照片.png",
+      "bytes": 2291,
+      "modifiedNS": 1793188680151010891,
+      "sha256": "e9441bac8c8f14e123b8775329d721ab0ef81b895b94c4c414115da32c567646"
+    }
+  ],
+  "importedCopiesVerified": 6,
+  "copies": [
+    {
+      "name": "M7-整理说明.txt",
+      "bytes": 179,
+      "sha256": "cae428dda7bc35f4badef66ceb3ac72df5f1bf4d94fa8441d264eb0b083a6597"
+    },
+    {
+      "name": "M7-收纳订单.pdf",
+      "bytes": 763,
+      "sha256": "f37f5a89ca3265a7835ebadbef7f6093327adcd570836708436bf908e1e77571"
+    },
+    {
+      "name": "M7-设备照片.png",
+      "bytes": 2291,
+      "sha256": "e9441bac8c8f14e123b8775329d721ab0ef81b895b94c4c414115da32c567646"
+    },
+    {
+      "name": "M7-整理说明.txt",
+      "bytes": 179,
+      "sha256": "cae428dda7bc35f4badef66ceb3ac72df5f1bf4d94fa8441d264eb0b083a6597"
+    },
+    {
+      "name": "M7-设备照片.png",
+      "bytes": 2291,
+      "sha256": "e9441bac8c8f14e123b8775329d721ab0ef81b895b94c4c414115da32c567646"
+    },
+    {
+      "name": "M7-收纳订单.pdf",
+      "bytes": 763,
+      "sha256": "f37f5a89ca3265a7835ebadbef7f6093327adcd570836708436bf908e1e77571"
+    }
+  ],
+  "objectLinks": 1,
+  "matterLinks": 1,
+  "automaticBodyIndexes": 0
+}

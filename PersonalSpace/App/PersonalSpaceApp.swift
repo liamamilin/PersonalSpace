@@ -22,6 +22,8 @@ struct LibraryCommands: Commands {
     @ObservedObject var model: LibraryModel
     var body: some Commands {
         CommandGroup(replacing: .newItem) {
+            Button("收纳文件…") { model.chooseImportFiles() }.keyboardShortcut("i", modifiers: [.command, .shift])
+                .disabled(model.storageUnavailable || model.isImporting)
             Button(model.isMattersList || model.isActionsList ? "新建事务…" : "新建个人对象…") {
                 if model.isMattersList || model.isActionsList { model.createOrder() }
                 else { model.createObject() }
@@ -39,7 +41,7 @@ struct LibraryCommands: Commands {
             Button("系统预览") { model.quickLook() }.disabled(model.selectedFile == nil)
             Button("打开可用文件") { model.openSelected() }.keyboardShortcut("o")
                 .disabled(model.selectedFile == nil)
-            Button("在 Finder 中显示") { model.revealSelected() }.keyboardShortcut("r", modifiers: [.command, .shift])
+            Button(model.selectedFile?.isImported == true ? "在 Finder 中显示副本" : "在 Finder 中显示") { model.revealSelected() }.keyboardShortcut("r", modifiers: [.command, .shift])
                 .disabled(model.selectedFile == nil || model.selectedFile?.isPhoto == true)
             Button("关联到对象…") { model.showLinkSheet = true }.disabled(model.selectedFile == nil)
             Button("从资料创建事务…") { model.createMatter(kind: .order) }.disabled(model.selectedFile == nil || !model.isFileList)

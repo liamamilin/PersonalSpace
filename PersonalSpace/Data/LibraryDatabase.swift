@@ -144,6 +144,9 @@ final class LibraryDatabase: Sendable {
                 try db.execute(sql: "DELETE FROM document_text WHERE itemID=?", arguments: [id])
             }
         }
+        migrator.registerMigration("M7-quick-imports") { db in
+            try db.execute(sql: "ALTER TABLE item ADD COLUMN importedFromPath TEXT")
+        }
         try migrator.migrate(queue)
     }
 
@@ -175,7 +178,10 @@ final class LibraryDatabase: Sendable {
     }
 
     func saveSource(id: String, name: String, path: String, bookmark: Data) async throws {
-        guard id != "photos", path != "photos://system-library" else { throw LibraryDataError.invalidFolderSource }
+        guard !["photos", "inbox"].contains(id),
+              !["photos://system-library", "inbox://imports"].contains(path) else {
+            throw LibraryDataError.invalidFolderSource
+        }
         try await queue.write { db in
             let retainedID = try String.fetchOne(db, sql: "SELECT id FROM source WHERE path=? AND kind='folder'",
                                                 arguments: [path]) ?? id
@@ -301,6 +307,11 @@ final class LibraryDatabase: Sendable {
             if query.managedOnly {
                 conditions.append("i.managedCopyPath IS NOT NULL")
             }
+            if query.inboxOnly {
+                conditions.append("i.kind='imported'")
+                conditions.append("NOT EXISTS (SELECT 1 FROM object_item oi WHERE oi.itemID=i.id)")
+                conditions.append("NOT EXISTS (SELECT 1 FROM matter_item mi WHERE mi.itemID=i.id)")
+            }
             if let sourceID = query.sourceID {
                 conditions.append("i.sourceID = ?")
                 arguments += [sourceID]
@@ -308,8 +319,9 @@ final class LibraryDatabase: Sendable {
             let words = query.search.split(whereSeparator: \.isWhitespace).map(String.init)
             for word in words {
                 let escaped = Self.escapedSearch(word)
-                var matches = ["i.name LIKE ? ESCAPE '\\'", "i.relativePath LIKE ? ESCAPE '\\'", "s.name LIKE ? ESCAPE '\\'"]
-                arguments += ["%\(escaped)%", "%\(escaped)%", "%\(escaped)%"]
+                var matches = ["i.name LIKE ? ESCAPE '\\'", "i.relativePath LIKE ? ESCAPE '\\'",
+                    "s.name LIKE ? ESCAPE '\\'", "i.importedFromPath LIKE ? ESCAPE '\\'"]
+                arguments += ["%\(escaped)%", "%\(escaped)%", "%\(escaped)%", "%\(escaped)%"]
                 if query.searchBody {
                     if word.count < 3 {
                         // Trigram cannot match 1–2 characters; keep short Chinese queries useful.
@@ -427,6 +439,34 @@ final class LibraryDatabase: Sendable {
                 WHERE id=? AND managedCopyPath IS NULL
                 """, arguments: [relativePath, sha256.lowercased(), Date(), itemID])
             guard db.changesCount == 1 else { throw LibraryDataError.managedCopyNotSaved }
+        }
+    }
+
+    // The original path is display/search metadata only. No source bookmark or access is retained.
+    func saveImportedFile(metadata: ScannedFile, copy: ManagedCopy, originalPath: String) async throws -> String {
+        guard !metadata.name.isEmpty, metadata.bytes >= 0, !originalPath.isEmpty,
+              ManagedFileStore.isValidRelativePath(copy.relativePath),
+              copy.sha256.count == 64, copy.sha256.allSatisfy({ $0.isHexDigit && $0.isASCII }) else {
+            throw LibraryDataError.invalidManagedCopy
+        }
+        return try await queue.write { db in
+            try db.execute(sql: """
+                INSERT INTO source(id, name, path, bookmark, isEnabled, kind)
+                VALUES ('inbox', '快速收纳', 'inbox://imports', ?, 1, 'import')
+                ON CONFLICT(id) DO UPDATE SET isEnabled=1
+                """, arguments: [Data()])
+            let id = UUID().uuidString
+            let now = Date()
+            let sensitivity = DocumentTextExtractor.isPotentiallySensitive(name: metadata.name) ? "suspected" : "normal"
+            try db.execute(sql: """
+                INSERT INTO item(id, sourceID, relativePath, name, typeIdentifier, bytes,
+                    modifiedAt, createdAt, indexedAt, scanID, isAvailable, kind, sensitivity,
+                    managedCopyPath, managedSHA256, managedAt, importedFromPath)
+                VALUES (?, 'inbox', ?, ?, ?, ?, ?, ?, ?, 'import', 0, 'imported', ?, ?, ?, ?, ?)
+                """, arguments: [id, copy.relativePath, metadata.name, metadata.typeIdentifier, metadata.bytes,
+                    metadata.modifiedAt, metadata.createdAt, now, sensitivity,
+                    copy.relativePath, copy.sha256.lowercased(), now, originalPath])
+            return id
         }
     }
 
@@ -640,7 +680,7 @@ final class LibraryDatabase: Sendable {
         i.id, i.sourceID, i.relativePath, i.name, i.typeIdentifier, i.bytes,
         i.modifiedAt, i.createdAt, (i.isAvailable AND s.isEnabled) AS isAvailable,
         i.managedCopyPath, i.managedSHA256, i.managedAt,
-        i.kind AS itemKind, i.photoLocalIdentifier, i.sensitivity,
+        i.kind AS itemKind, i.photoLocalIdentifier, i.sensitivity, i.importedFromPath,
         (SELECT dt.indexedAt FROM document_text dt WHERE dt.itemID=i.id) AS textIndexedAt,
         s.name AS sourceName, s.path AS sourcePath,
         CASE WHEN s.isEnabled=0 AND s.kind='photos' THEN COALESCE(s.lastError, '照片图库访问已关闭，请重新授权照片。')

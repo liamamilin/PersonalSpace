@@ -1,0 +1,7 @@
+{
+  "defaultApplicationOpenedVaultCopy": true,
+  "defaultApplication": "WPS Office",
+  "strictCodeSignatureVerified": true,
+  "sandboxEnabled": true,
+  "releaseGetTaskAllow": false
+}

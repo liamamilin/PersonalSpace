@@ -43,7 +43,13 @@ struct FileDetailView: View {
                                 Text(model.previewError ?? "请刷新或重新授权来源。")
                             }.frame(minHeight: 170)
                         }
-                        VStack(alignment: .leading, spacing: 10) {
+                        if file.isImported {
+                            VStack(alignment: .leading, spacing: 6) {
+                                Label("通过快速收纳保存", systemImage: "tray.and.arrow.down").font(.headline)
+                                Text("原文件保持不变。预览和打开均使用本地托管副本。")
+                                    .font(.callout).foregroundStyle(.secondary)
+                            }
+                        } else { VStack(alignment: .leading, spacing: 10) {
                             Text("原文件").font(.headline)
                             if let error = model.originalError {
                                 Label(error, systemImage: "exclamationmark.triangle")
@@ -60,7 +66,7 @@ struct FileDetailView: View {
                                     Button("重新授权") { model.addFolders(replacing: source) }
                                 }.controlSize(.small).disabled(model.scanning[source.id] != nil)
                             }
-                        }
+                        } }
                         Divider()
                         VStack(alignment: .leading, spacing: 10) {
                             Text("托管副本").font(.headline)
@@ -75,6 +81,10 @@ struct FileDetailView: View {
                                     Button("打开托管副本") { model.openManagedCopy() }
                                     Button("预览副本", systemImage: "eye") { model.quickLook(preferManaged: true) }
                                 }.controlSize(.small).disabled(model.managedURL == nil)
+                                if file.isImported {
+                                    Button("在 Finder 中显示副本", systemImage: "folder") { model.revealSelected() }
+                                        .controlSize(.small).disabled(model.managedURL == nil)
+                                }
                                 if let date = file.managedAt {
                                     Text("保存于 " + date.formatted(date: .abbreviated, time: .shortened))
                                         .font(.caption).foregroundStyle(.secondary)
@@ -118,7 +128,11 @@ struct FileDetailView: View {
                         Divider()
                         VStack(alignment: .leading, spacing: 10) {
                             Text("事务跟进").font(.headline)
-                            Button("从此凭证创建事务", systemImage: "doc.badge.plus") { model.createMatter(kind: .order) }
+                            Menu("从此凭证创建事务", systemImage: "doc.badge.plus") {
+                                ForEach(MatterKind.allCases) { kind in
+                                    Button("创建" + kind.title) { model.createMatter(kind: kind) }
+                                }
+                            }
                             Text("可按需识别文字、校对事实，再填写明确的提醒日期。")
                                 .font(.callout).foregroundStyle(.secondary)
                         }

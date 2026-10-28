@@ -1,5 +1,6 @@
 import CryptoKit
 import Foundation
+import UniformTypeIdentifiers
 
 struct ManagedCopy: Sendable {
     let relativePath: String
@@ -23,8 +24,8 @@ struct ManagedFileStore: Sendable {
     // The caller holds the source folder's security-scoped access for this operation.
     func copy(sourceURL: URL) throws -> ManagedCopy {
         guard sourceURL.isFileURL else { throw ManagedFileError.invalidSource }
-        let source = try sourceURL.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey])
-        guard source.isRegularFile == true, source.isSymbolicLink != true else {
+        let source = try sourceURL.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey, .isPackageKey])
+        guard source.isRegularFile == true, source.isSymbolicLink != true, source.isPackage != true else {
             throw ManagedFileError.invalidSource
         }
         try prepareRoot()
@@ -55,6 +56,39 @@ struct ManagedFileStore: Sendable {
         _ = try url(for: relativePath)
         committed = true
         return ManagedCopy(relativePath: relativePath, sha256: sourceDigest)
+    }
+
+    // The caller holds the dropped/selected file's security scope until this returns.
+    func importFile(sourceURL: URL, database: LibraryDatabase) async throws -> String {
+        let copyTask = Task.detached(priority: .userInitiated) { () throws -> (ManagedCopy, ScannedFile) in
+            let copy = try self.copy(sourceURL: sourceURL)
+            do {
+                let copiedURL = try self.url(for: copy.relativePath)
+                let values = try copiedURL.resourceValues(forKeys: [.contentTypeKey, .fileSizeKey,
+                    .contentModificationDateKey, .creationDateKey])
+                let metadata = ScannedFile(relativePath: copy.relativePath, name: sourceURL.lastPathComponent,
+                    typeIdentifier: values.contentType?.identifier ?? UTType.data.identifier,
+                    bytes: Int64(values.fileSize ?? 0), modifiedAt: values.contentModificationDate,
+                    createdAt: values.creationDate)
+                return (copy, metadata)
+            } catch {
+                try? self.discardUncommittedCopy(copy.relativePath)
+                throw error
+            }
+        }
+        let (copy, metadata) = try await withTaskCancellationHandler {
+            try await copyTask.value
+        } onCancel: {
+            copyTask.cancel()
+        }
+        do {
+            try Task.checkCancellation()
+            return try await database.saveImportedFile(metadata: metadata, copy: copy,
+                                                       originalPath: sourceURL.standardizedFileURL.path)
+        } catch {
+            try? discardUncommittedCopy(copy.relativePath)
+            throw error
+        }
     }
 
     func url(for relativePath: String) throws -> URL {

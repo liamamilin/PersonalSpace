@@ -1,0 +1,33 @@
+阶段: M7 快速收纳
+基线: aec7438ac42973078726b00865edc8d6ac96b60c (GitHub main)
+版本: 0.7.0 (7), macOS 26+, arm64 local ad hoc Release
+最终 Debug XCTest: TEST SUCCEEDED, 56 tests, 0 failures (新增7项M7直接测试)
+最终 Release xcodebuild: BUILD SUCCEEDED
+严格 codesign: verified; App Sandbox=true; get-task-allow=false
+ZIP: PersonalSpace-0.7.0-7-local-arm64-20261028T121754Z.zip
+ZIP SHA-256: 644c342153d5ae217a81300537b032fa7bd7e1d57bb5064c62c73293598b3b1d
+ZIP integrity: unzip -tq passed
+
+真实操作:
+文件菜单单份TXT: 通过; Space托管预览: 通过
+Finder PDF/PNG/TXT: 用户手动拖入并确认; 读取GUI核对通过
+系统面板两份同时导入: 通过; Finder多选单次拖放未单独确认
+导入PDF关联已有个人对象: 通过; 整理后离开待整理
+导入PNG预览并创建保修事务: 通过; 事务保留凭证
+退出/重启: 六份导入可搜索; PDF预览和对象关系/保修事务保留
+默认应用打开: WPS Office; lsof核对实际Vault副本通过
+源文件: 三份SHA-256/字节数/修改时间与收纳前完全相同
+托管副本: 六份哈希全部匹配; 未自动保存正文
+最终签名构建已重新启动，原有M1-M6来源和数据保留
+
+证据:
+M7-final-test.log / M7-final-tests.xcresult (本机)
+M7-final-release-build.log / M7-package.log (本机)
+source-before.json / file-verification.json / release-verification.json
+01-08 实际截图在本目录本机保存，未上传公共仓库
+
+未验证/限制:
+自动化跨应用拖放未触发系统事件，Finder三种文件由用户协助完成
+Finder多选单次拖放未单独确认; 系统面板多选已验收
+Developer ID签名、公证、DMG、干净账户安装未执行
+本轮到M7停止

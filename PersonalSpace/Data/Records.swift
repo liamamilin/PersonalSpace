@@ -112,11 +112,17 @@ struct LibraryFile: Decodable, FetchableRecord, Identifiable, Sendable, Equatabl
     var itemKind = "file"
     var photoLocalIdentifier: String? = nil
     var sensitivity = "normal"
+    var importedFromPath: String? = nil
 
     var modifiedSortDate: Date { modifiedAt ?? .distantPast }
     var isPhoto: Bool { itemKind == "photo" }
+    var isImported: Bool { itemKind == "imported" }
     var kind: String { isPhoto ? "照片" : UTType(typeIdentifier)?.localizedDescription ?? "文件" }
-    var fullPath: String { isPhoto ? "照片图库" : URL(fileURLWithPath: sourcePath).appendingPathComponent(relativePath).path }
+    var fullPath: String {
+        if isPhoto { return "照片图库" }
+        if isImported { return importedFromPath ?? "快速收纳" }
+        return URL(fileURLWithPath: sourcePath).appendingPathComponent(relativePath).path
+    }
     var size: String { isPhoto ? "—" : ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file) }
 }
 
@@ -165,6 +171,7 @@ struct FileQuery: Sendable {
     var objectID: String? = nil
     var matterID: String? = nil
     var managedOnly = false
+    var inboxOnly = false
     var searchBody = false
     var sort: FileSort = .name
     var ascending = true

@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import UniformTypeIdentifiers
 
 @MainActor
 final class LibraryModel: ObservableObject {
@@ -53,6 +54,12 @@ final class LibraryModel: ObservableObject {
     @Published var showQuickLook = false
     @Published var searchFocusRequest = 0
     @Published var storageUnavailable = false
+    @Published var inboxCount = 0
+    @Published var importingTotal = 0
+    @Published var importCompleted = 0
+    @Published var importMessage: String?
+    @Published var importFailures: [String] = []
+    @Published private var loadingDrop = false
     private let database: LibraryDatabase?
     private var scanTasks: [String: Task<Void, Never>] = [:]
     private var started = false
@@ -65,6 +72,8 @@ final class LibraryModel: ObservableObject {
     var isMattersList: Bool { selectedSourceID == "matters" }
     var isActionsList: Bool { selectedSourceID == "actions" }
     var isPhotosList: Bool { selectedSourceID == PhotoLibraryController.sourceID }
+    var isInbox: Bool { selectedSourceID == "inbox" }
+    var isImporting: Bool { importingTotal > 0 || loadingDrop }
     var isFileList: Bool { !isObjectsList && !isMattersList && !isActionsList }
     var currentObjectID: String? {
         selectedSourceID.hasPrefix("object:") ? String(selectedSourceID.dropFirst(7)) : nil
@@ -74,9 +83,9 @@ final class LibraryModel: ObservableObject {
         objects.first { $0.id == (currentObjectID ?? selectedObjectID) }
     }
     var query: FileQuery {
-        let isSource = !["all", "objects", "managed", "matters", "actions"].contains(selectedSourceID) && currentObjectID == nil
+        let isSource = !["all", "objects", "managed", "matters", "actions", "inbox"].contains(selectedSourceID) && currentObjectID == nil
         return FileQuery(search: isObjectsList ? "" : search, sourceID: isSource ? selectedSourceID : nil,
-            objectID: currentObjectID, managedOnly: selectedSourceID == "managed", searchBody: searchBody,
+            objectID: currentObjectID, managedOnly: selectedSourceID == "managed", inboxOnly: isInbox, searchBody: searchBody,
             sort: sort, ascending: ascending, limit: limit)
     }
     var isScanning: Bool { !scanning.isEmpty }
@@ -121,6 +130,7 @@ final class LibraryModel: ObservableObject {
             let newMatters = try await database.matters()
             let newActions = try await database.actions()
             let result = try await database.files(request)
+            let pendingCount = try await database.files(FileQuery(inboxOnly: true, limit: 0)).total
             guard generation == queryGeneration, !Task.isCancelled else { return }
             sources = newSources
             objects = newObjects
@@ -128,6 +138,7 @@ final class LibraryModel: ObservableObject {
             actions = newActions
             files = result.files
             total = result.total
+            inboxCount = pendingCount
             if let id = selectedFileID, !files.contains(where: { $0.id == id }) {
                 selectedFileID = nil
             }
@@ -155,6 +166,84 @@ final class LibraryModel: ObservableObject {
                 await saveFolder(url, replacing: source)
             }
         }
+    }
+
+    func chooseImportFiles() {
+        guard !storageUnavailable, !isImporting else { return }
+        let panel = NSOpenPanel()
+        panel.title = "收纳文件"
+        panel.message = "复制到 PersonalSpace 托管保存。原文件保持不变，收纳后可在「待整理」中预览和关联。"
+        panel.prompt = "收纳文件"
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = true
+        panel.resolvesAliases = false
+        panel.canCreateDirectories = false
+        guard panel.runModal() == .OK else { return }
+        importFiles(panel.urls)
+    }
+
+    func receiveDroppedFiles(_ providers: [NSItemProvider]) -> Bool {
+        guard !storageUnavailable, !isImporting, !providers.isEmpty else { return false }
+        loadingDrop = true
+        Task {
+            var urls: [URL] = []
+            for provider in providers {
+                let url: URL? = await withCheckedContinuation { continuation in
+                    provider.loadItem(forTypeIdentifier: UTType.fileURL.identifier, options: nil) { item, _ in
+                        let url: URL?
+                        if let value = item as? URL { url = value }
+                        else if let data = item as? Data { url = URL(dataRepresentation: data, relativeTo: nil) }
+                        else { url = nil }
+                        continuation.resume(returning: url?.isFileURL == true ? url : nil)
+                    }
+                }
+                if let url { urls.append(url) }
+            }
+            loadingDrop = false
+            guard urls.count == providers.count else {
+                errorMessage = "无法读取拖入的文件。请从 Finder 拖入普通文件，或使用「收纳文件」。"
+                return
+            }
+            importFiles(urls)
+        }
+        return true
+    }
+
+    @discardableResult
+    func importFiles(_ urls: [URL]) -> Bool {
+        guard let database, let store = managedStore, !isImporting,
+              !urls.isEmpty, urls.allSatisfy(\.isFileURL) else { return false }
+        // Hold the panel/drop's temporary sandbox access until all copying has completed.
+        let scopedURLs = urls.filter { $0.startAccessingSecurityScopedResource() }
+        importingTotal = urls.count
+        importCompleted = 0
+        importFailures = []
+        importMessage = nil
+        selectedSourceID = "inbox"
+        selectedFileID = nil
+        search = ""
+        Task {
+            defer {
+                scopedURLs.forEach { $0.stopAccessingSecurityScopedResource() }
+                importingTotal = 0
+            }
+            var importedIDs: [String] = []
+            for url in urls {
+                do {
+                    let id = try await store.importFile(sourceURL: url, database: database)
+                    importedIDs.append(id)
+                    await reload()
+                    if isInbox { selectedFileID = id }
+                } catch {
+                    importFailures.append(url.lastPathComponent + "：" + error.localizedDescription)
+                }
+                importCompleted += 1
+            }
+            importMessage = "已收纳 \(importedIDs.count) 份文件" + (importFailures.isEmpty ? "，原文件保持不变。" : "，\(importFailures.count) 份未收纳。")
+            await reload()
+        }
+        return true
     }
 
     private func saveFolder(_ url: URL, replacing source: FolderSource?) async {
@@ -288,7 +377,9 @@ final class LibraryModel: ObservableObject {
         previewError = nil
         guard let file = selectedFile else { return }
         guard !file.isPhoto else { return }
-        if file.isAvailable, let source = sources.first(where: { $0.id == file.sourceID }) {
+        if file.isImported {
+            // Import grants access only for copying; subsequent reads use our own Vault.
+        } else if file.isAvailable, let source = sources.first(where: { $0.id == file.sourceID }) {
             do {
                 let access = try FolderAccess.resolve(source)
                 previewRoot = access.url
@@ -375,8 +466,9 @@ final class LibraryModel: ObservableObject {
     func revealSelected() {
         guard selectedFile?.isPhoto != true else { return }
         preparePreview()
-        guard let originalURL else { errorMessage = originalError; return }
-        NSWorkspace.shared.activateFileViewerSelecting([originalURL])
+        let target = selectedFile?.isImported == true ? managedURL : originalURL
+        guard let target else { errorMessage = previewError ?? originalError; return }
+        NSWorkspace.shared.activateFileViewerSelecting([target])
     }
 
     func createObject() {

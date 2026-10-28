@@ -8,6 +8,7 @@ struct LibraryView: View {
     @State private var showInspector = true
     @State private var compactWindow = false
     @State private var showCompactInspector = false
+    @State private var dropTargeted = false
     @State private var sortOrder = [KeyPathComparator(\LibraryFile.name)]
     @FocusState private var searchFocused: Bool
 
@@ -27,6 +28,11 @@ struct LibraryView: View {
                     model.selectedSourceID = destination
                 })) {
                     Section("资料库") {
+                        HStack {
+                            Label("待整理", systemImage: "tray.and.arrow.down")
+                            Spacer()
+                            if model.inboxCount > 0 { Text(model.inboxCount, format: .number).foregroundStyle(.secondary) }
+                        }.tag("inbox")
                         Label("所有资料", systemImage: "tray.full").tag("all")
                         Label("已托管", systemImage: "externaldrive.badge.checkmark").tag("managed")
                         Label("照片图库", systemImage: "photo.on.rectangle").tag(PhotoLibraryController.sourceID)
@@ -72,6 +78,29 @@ struct LibraryView: View {
             .navigationSplitViewColumnWidth(min: 180, ideal: 210, max: 280)
         } detail: {
             VStack(spacing: 0) {
+                if model.isImporting || model.importMessage != nil {
+                    VStack(alignment: .leading, spacing: 8) {
+                        HStack {
+                            if model.isImporting {
+                                ProgressView().controlSize(.small)
+                                Text(model.importingTotal == 0 ? "正在读取拖入的文件…" : "正在收纳 · \(model.importCompleted) / \(model.importingTotal)")
+                            } else {
+                                Label(model.importMessage ?? "", systemImage: model.importFailures.isEmpty ? "checkmark.circle" : "exclamationmark.triangle")
+                                Spacer()
+                                Button("关闭收纳结果", systemImage: "xmark") { model.importMessage = nil; model.importFailures = [] }
+                                    .labelStyle(.iconOnly)
+                            }
+                        }
+                        if !model.importFailures.isEmpty {
+                            DisclosureGroup("未收纳的文件（\(model.importFailures.count)）") {
+                                ForEach(Array(model.importFailures.enumerated()), id: \.offset) { _, failure in
+                                    Text(failure).font(.caption).textSelection(.enabled)
+                                }
+                            }
+                        }
+                    }.font(.callout).padding(12).frame(maxWidth: .infinity, alignment: .leading)
+                        .background(.quaternary.opacity(0.5))
+                }
                 if let message = model.errorMessage {
                     HStack {
                         Label(message, systemImage: "exclamationmark.triangle").font(.callout)
@@ -79,6 +108,19 @@ struct LibraryView: View {
                         Button("关闭", systemImage: "xmark") { model.errorMessage = nil }.labelStyle(.iconOnly)
                     }
                     .padding(12).background(.orange.opacity(0.12))
+                }
+                if model.isInbox {
+                    HStack(spacing: 12) {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("快速收纳").font(.headline)
+                            Text("从 Finder 拖入文件，或选择文件收纳。关联对象或事务后移出待整理，副本仍保留在资料库。")
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        Button("收纳文件…", systemImage: "tray.and.arrow.down") { model.chooseImportFiles() }
+                            .disabled(model.storageUnavailable || model.isImporting)
+                    }.padding(16)
+                    Divider()
                 }
                 if let source = model.sources.first(where: { $0.id == model.selectedSourceID }), let error = source.lastError {
                     HStack {
@@ -132,6 +174,15 @@ struct LibraryView: View {
                 .padding(.horizontal, 16).padding(.vertical, 10)
             }
             .navigationTitle(navigationTitle)
+            .onDrop(of: [UTType.fileURL], isTargeted: $dropTargeted) { providers in
+                model.receiveDroppedFiles(providers)
+            }
+            .overlay {
+                if dropTargeted {
+                    RoundedRectangle(cornerRadius: 10).strokeBorder(.tint, lineWidth: 3)
+                        .padding(4).allowsHitTesting(false)
+                }
+            }
             .inspector(isPresented: Binding(get: { showInspector && !compactWindow }, set: { showInspector = $0 })) {
                 inspectorContent.inspectorColumnWidth(min: 300, ideal: 340, max: 440)
             }
@@ -140,6 +191,9 @@ struct LibraryView: View {
         .searchFocused($searchFocused)
         .toolbar {
             ToolbarItemGroup {
+                Button("收纳文件", systemImage: "tray.and.arrow.down") { model.chooseImportFiles() }
+                    .disabled(model.storageUnavailable || model.isImporting)
+                    .help("复制文件到待整理（⇧⌘I），也可从 Finder 拖入")
                 Menu {
                     Button("创建个人对象") { model.createObject() }
                     Menu("创建事务") {
@@ -244,18 +298,32 @@ struct LibraryView: View {
         if model.isMattersList { return "事务" }
         if model.isActionsList { return "待办" }
         if model.isPhotosList { return "照片图库" }
+        if model.isInbox { return "待整理" }
         if model.currentObjectID != nil { return model.selectedObject?.name ?? "个人对象" }
         if model.selectedSourceID == "managed" { return "已托管" }
         return model.sources.first(where: { $0.id == model.selectedSourceID })?.name ?? "资料库"
     }
 
     @ViewBuilder private var content: some View {
-        if model.sources.isEmpty && model.total == 0 && model.currentObjectID == nil && model.selectedSourceID != "managed" {
+        if model.isInbox && model.files.isEmpty {
+            ContentUnavailableView {
+                Label(model.search.isEmpty ? "收纳文件，稍后整理" : "没有找到待整理资料", systemImage: "tray.and.arrow.down")
+            } description: {
+                Text(model.search.isEmpty ? "把一份或多份文件从 Finder 拖到这里。\n托管副本可独立使用，原文件保持不变。" : "试试其它关键词，或在「所有资料」中查找已整理的文件。")
+            } actions: {
+                if model.search.isEmpty {
+                    Button("收纳文件…") { model.chooseImportFiles() }.buttonStyle(.borderedProminent)
+                        .disabled(model.storageUnavailable || model.isImporting)
+                } else { Button("清除搜索") { model.search = "" } }
+            }.frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else if model.sources.isEmpty && model.total == 0 && model.currentObjectID == nil && model.selectedSourceID != "managed" {
             ContentUnavailableView {
                 Label("把散落的个人资料放到一个入口", systemImage: "folder.badge.plus")
             } description: {
                 Text("文件保留在原位置，仅建立本地索引。\n添加你希望查找的文件夹，开始使用资料库。")
             } actions: {
+                Button("收纳文件…") { model.chooseImportFiles() }
+                    .disabled(model.storageUnavailable || model.isImporting)
                 Button("添加文件夹") { model.addFolders() }
                     .buttonStyle(.borderedProminent).disabled(model.storageUnavailable)
             }.frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -282,7 +350,7 @@ struct LibraryView: View {
                             Image(systemName: "externaldrive.badge.checkmark").foregroundStyle(.secondary)
                                 .help("已保存托管副本")
                         }
-                        if !file.isAvailable || file.sourceError != nil {
+                        if (!file.isAvailable && !file.isImported) || file.sourceError != nil {
                             Image(systemName: "exclamationmark.triangle").foregroundStyle(.orange)
                                 .help(file.sourceError ?? "原位置已不可用")
                         }
@@ -307,12 +375,18 @@ struct LibraryView: View {
                     Button("系统预览") { model.selectedFileID = id; model.quickLook() }
                     Button("打开可用文件") { model.selectedFileID = id; model.openSelected() }
                     Button("关联到对象…") { model.selectedFileID = id; model.showLinkSheet = true }
-                    Button("创建事务…") { model.selectedFileID = id; model.createMatter(kind: .order) }
+                    Menu("创建事务") {
+                        ForEach(MatterKind.allCases) { kind in
+                            Button("创建" + kind.title) { model.selectedFileID = id; model.createMatter(kind: kind) }
+                        }
+                    }
                     if let objectID = model.currentObjectID {
                         Button("解除与此对象的关联") { Task { await model.unlink(id, from: objectID) } }
                     }
                     if model.files.first(where: { $0.id == id })?.isPhoto != true {
-                        Button("在 Finder 中显示") { model.selectedFileID = id; model.revealSelected() }
+                        Button(model.files.first(where: { $0.id == id })?.isImported == true ? "在 Finder 中显示副本" : "在 Finder 中显示") {
+                            model.selectedFileID = id; model.revealSelected()
+                        }
                     }
                 }
             } primaryAction: { ids in

@@ -154,7 +154,7 @@ struct MatterDetailView: View {
                                 } label: {
                                     Label(file.name, systemImage: "doc").lineLimit(2)
                                 }.buttonStyle(.link).help("在资料库中预览或打开此凭证")
-                                Text(file.sourceName + " · " + (file.isAvailable ? "原件可用" : file.managedCopyPath != nil ? "原件不可用，可查看托管副本" : "原件不可用"))
+                                Text(file.sourceName + " · " + (file.isImported ? "托管副本" : file.isAvailable ? "原件可用" : file.managedCopyPath != nil ? "原件不可用，可查看托管副本" : "原件不可用"))
                                     .font(.caption).foregroundStyle(.secondary)
                             }
                         }
