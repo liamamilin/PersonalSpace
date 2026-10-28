@@ -105,7 +105,11 @@ struct LibraryView: View {
                     HStack {
                         Label(message, systemImage: "exclamationmark.triangle").font(.callout)
                         Spacer()
+                        if model.pendingCopyRemoval != nil {
+                            Button("重试移除副本") { model.retryCopyRemoval() }
+                        }
                         Button("关闭", systemImage: "xmark") { model.errorMessage = nil }.labelStyle(.iconOnly)
+                            .disabled(model.pendingCopyRemoval != nil)
                     }
                     .padding(12).background(.orange.opacity(0.12))
                 }
@@ -285,6 +289,14 @@ struct LibraryView: View {
         .sheet(isPresented: $model.showMatterEditor) {
             MatterEditorView(draft: model.matterDraft).environmentObject(model)
         }
+        .alert("从 PersonalSpace 移除？", isPresented: Binding(get: { model.filePendingRemoval != nil }, set: {
+            if !$0 { model.filePendingRemoval = nil }
+        }), presenting: model.filePendingRemoval) { file in
+            Button("取消", role: .cancel) { }
+            Button("移除", role: .destructive) { Task { await model.removeImportedFile(file) } }
+        } message: { file in
+            Text("将永久移除「\(file.name)」的资料记录、正文索引和 Vault 托管副本，无法撤销。原位置文件不会被删除或修改。")
+        }
     }
 
     @ViewBuilder private var inspectorContent: some View {
@@ -387,6 +399,11 @@ struct LibraryView: View {
                         Button(model.files.first(where: { $0.id == id })?.isImported == true ? "在 Finder 中显示副本" : "在 Finder 中显示") {
                             model.selectedFileID = id; model.revealSelected()
                         }
+                    }
+                    if let file = model.files.first(where: { $0.id == id }), file.isImported {
+                        Divider()
+                        Button("从 PersonalSpace 移除…", role: .destructive) { model.requestImportedRemoval(file) }
+                            .disabled(model.removingFileID != nil || model.pendingCopyRemoval != nil)
                     }
                 }
             } primaryAction: { ids in

@@ -59,6 +59,9 @@ final class LibraryModel: ObservableObject {
     @Published var importCompleted = 0
     @Published var importMessage: String?
     @Published var importFailures: [String] = []
+    @Published var filePendingRemoval: LibraryFile?
+    @Published var removingFileID: String?
+    @Published var pendingCopyRemoval: String?
     @Published private var loadingDrop = false
     private let database: LibraryDatabase?
     private var scanTasks: [String: Task<Void, Never>] = [:]
@@ -469,6 +472,41 @@ final class LibraryModel: ObservableObject {
         let target = selectedFile?.isImported == true ? managedURL : originalURL
         guard let target else { errorMessage = previewError ?? originalError; return }
         NSWorkspace.shared.activateFileViewerSelecting([target])
+    }
+
+    func requestImportedRemoval(_ file: LibraryFile) {
+        guard let database, file.isImported, removingFileID == nil, pendingCopyRemoval == nil else { return }
+        Task {
+            do {
+                _ = try await database.importedRemovalPath(itemID: file.id)
+                filePendingRemoval = file
+            } catch { errorMessage = error.localizedDescription }
+        }
+    }
+
+    func removeImportedFile(_ file: LibraryFile) async {
+        guard let database, let managedStore, file.isImported, removingFileID == nil else { return }
+        removingFileID = file.id
+        defer { removingFileID = nil }
+        if selectedFileID == file.id { showQuickLook = false; releasePreview() }
+        do {
+            try await managedStore.removeImportedFile(itemID: file.id, database: database)
+            errorMessage = nil
+        } catch let error as ImportedRemovalError {
+            if case .copyCleanupPending(let path) = error { pendingCopyRemoval = path }
+            errorMessage = error.localizedDescription
+        } catch { errorMessage = "未能移除资料：" + error.localizedDescription }
+        await reload()
+        await reloadLinkedObjects()
+    }
+
+    func retryCopyRemoval() {
+        guard let path = pendingCopyRemoval, let managedStore else { return }
+        do {
+            try managedStore.removeCopy(path)
+            pendingCopyRemoval = nil
+            errorMessage = nil
+        } catch { errorMessage = ImportedRemovalError.copyCleanupPending(relativePath: path).localizedDescription }
     }
 
     func createObject() {

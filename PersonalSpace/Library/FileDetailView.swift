@@ -170,6 +170,14 @@ struct FileDetailView: View {
                             property("创建日期", value: file.createdAt?.formatted(date: .abbreviated, time: .shortened) ?? "未知")
                             property("原始路径", value: file.fullPath)
                         }
+                        if file.isImported {
+                            Divider()
+                            Button("从 PersonalSpace 移除…", systemImage: "trash", role: .destructive) {
+                                model.requestImportedRemoval(file)
+                            }.disabled(model.removingFileID != nil || model.pendingCopyRemoval != nil)
+                            Text("仅移除本应用中的记录与托管副本。已关联的凭证需先解除关联。")
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
                     }.padding(20)
                 }
             } else {

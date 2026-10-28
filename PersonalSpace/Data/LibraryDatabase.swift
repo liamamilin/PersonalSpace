@@ -470,6 +470,34 @@ final class LibraryDatabase: Sendable {
         }
     }
 
+    func importedRemovalPath(itemID: String) async throws -> String {
+        try await queue.read { db in try Self.importedRemovalPath(db, itemID: itemID) }
+    }
+
+    // Commit the record removal before any file is unlinked. A failed commit leaves the copy intact.
+    func removeImportedFile(itemID: String) async throws -> String {
+        try await queue.write { db in
+            let path = try Self.importedRemovalPath(db, itemID: itemID)
+            try db.execute(sql: "DELETE FROM item WHERE id=?", arguments: [itemID])
+            return path
+        }
+    }
+
+    private static func importedRemovalPath(_ db: Database, itemID: String) throws -> String {
+        guard let row = try Row.fetchOne(db, sql: "SELECT kind, managedCopyPath FROM item WHERE id=?", arguments: [itemID]),
+              row["kind"] as String == "imported" else { throw LibraryDataError.importedOnly }
+        let linked = try Bool.fetchOne(db, sql: """
+            SELECT EXISTS(SELECT 1 FROM object_item WHERE itemID=?)
+                OR EXISTS(SELECT 1 FROM matter_item WHERE itemID=?)
+                OR EXISTS(SELECT 1 FROM fact WHERE sourceItemID=?)
+            """, arguments: [itemID, itemID, itemID]) ?? false
+        guard !linked else { throw LibraryDataError.importedStillLinked }
+        guard let path: String = row["managedCopyPath"], ManagedFileStore.isValidRelativePath(path) else {
+            throw LibraryDataError.invalidManagedCopy
+        }
+        return path
+    }
+
     // Called only after the user explicitly allows indexing the selected document's text.
     func saveDocumentText(itemID: String, text: String) async throws {
         guard text.count <= 200_000 else { throw LibraryDataError.documentTextTooLong }
@@ -699,6 +727,7 @@ private enum LibraryDataError: LocalizedError {
     case invalidObject, invalidManagedCopy, managedCopyNotSaved, invalidMatter, invalidAction
     case documentTextTooLong, emptyDocumentText, documentNotFound, sensitiveDocument
     case invalidFolderSource, invalidPhoto, invalidSensitivity
+    case importedOnly, importedStillLinked
 
     var errorDescription: String? {
         switch self {
@@ -714,6 +743,8 @@ private enum LibraryDataError: LocalizedError {
         case .invalidFolderSource: "此来源不是已授权文件夹，不能进行目录扫描。"
         case .invalidPhoto: "照片标识无效，未保存照片资料。"
         case .invalidSensitivity: "请选择普通、疑似敏感或敏感分类。"
+        case .importedOnly: "只能移除通过快速收纳导入的文件。资料可能已被移除，请刷新列表。"
+        case .importedStillLinked: "此文件仍关联个人对象、事务或事实出处。请先解除这些关联，再从 PersonalSpace 移除。"
         }
     }
 }
