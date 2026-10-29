@@ -153,4 +153,47 @@ final class FolderWatchingTests: XCTestCase {
         try Data("after startup".utf8).write(to: folder.appendingPathComponent("new.txt"))
         try await waitForFiles(2, sourceID: "persisted", database: database, model: model)
     }
+
+    func testContinuousChangesRefreshBeforeQuietWithoutBlockingOtherSource() async throws {
+        let root = try workspace()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let database = try LibraryDatabase(path: root.appendingPathComponent("library.sqlite").path)
+        let a = try await source("A", root: root, database: database)
+        let b = try await source("B", root: root, database: database)
+        let activity = a.appendingPathComponent("activity.log")
+        try Data("initial".utf8).write(to: activity)
+        let model = LibraryModel(database: database)
+        await model.start()
+        try await waitForFiles(1, sourceID: "A", database: database, model: model)
+        try await waitForFiles(0, sourceID: "B", database: database, model: model)
+
+        // Keep real FSEvents arriving beyond the assertion deadline. A trailing
+        // debounce alone cannot discover new.txt until this writer becomes quiet.
+        let writer = Task.detached {
+            let end = ContinuousClock.now.advanced(by: .seconds(12))
+            var sequence = 0
+            while ContinuousClock.now < end {
+                try Task.checkCancellation()
+                try Data("synthetic update \(sequence)".utf8).write(to: activity)
+                sequence += 1
+                try await Task.sleep(for: .milliseconds(150))
+            }
+        }
+        defer { writer.cancel() }
+        try Data("active source".utf8).write(to: a.appendingPathComponent("new.txt"))
+        try Data("independent source".utf8).write(to: b.appendingPathComponent("new.txt"))
+        let deadline = ContinuousClock.now.advanced(by: .seconds(8))
+        var aUpdated = false, bUpdated = false
+        while ContinuousClock.now < deadline {
+            aUpdated = try await database.files(FileQuery(sourceID: "A")).files.filter(\.isAvailable).count == 2 && model.scanning["A"] == nil
+            bUpdated = try await database.files(FileQuery(sourceID: "B")).files.filter(\.isAvailable).count == 1 && model.scanning["B"] == nil
+            if aUpdated && bUpdated { break }
+            try await Task.sleep(for: .milliseconds(100))
+        }
+        XCTAssertTrue(aUpdated, "Continuous events must not postpone refresh until the source becomes quiet")
+        XCTAssertTrue(bUpdated, "Changes in A must not block source B")
+        writer.cancel()
+        _ = try? await writer.value
+    }
+
 }

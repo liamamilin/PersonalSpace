@@ -24,3 +24,5 @@ xcodebuild -xctestrun .build/DerivedData/Build/Products/PersonalSpace_macosx27.0
 **剩余问题和下一个能力**：尚未确定系统服务内部为何进入此前的高 CPU 状态，以及具体触发事件或客户端；历史报告不足以追到这个层级。若 fseventsd 再次积压，依赖它的自动刷新仍可能延迟，不能承诺永久不再发生。现有手动刷新及启动补扫直接调用 FolderScanner，不需要等待事件（代码路径确认）；本轮未人为冻结全局系统服务来制造故障。再次异常时应先取当前热点调用栈再重启，否则会丢失现场，可由用户在本机执行 `sudo sample "$(pgrep -x fseventsd)" 5 -file /tmp/fseventsd-hot.txt`；取样保留本机，勿直接公开。没有增加后台监控、轮询或恢复调度器，停止于本次排查，不进入 M11。
 
 API 生命周期对照：[Apple FSEvents 文档](https://developer.apple.com/library/archive/documentation/Darwin/Conceptual/FSEvents_ProgGuide/UsingtheFSEventsFramework/UsingtheFSEventsFramework.html)。
+
+进一步分析：已在持续写入场景复现并修复应用合并等待无限延期，完整 79 项测试和真实界面对照通过，见 [持续变更下的自动刷新](CONTINUOUS-REFRESH.md)。该问题与此前系统服务高 CPU 的初始成因分开记录。

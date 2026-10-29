@@ -79,6 +79,7 @@ final class LibraryModel: ObservableObject {
     private var scanTasks: [String: Task<Void, Never>] = [:]
     private var folderWatchers: [String: (watcher: FolderWatcher, root: URL)] = [:]
     private var sourceDebounces: [String: Task<Void, Never>] = [:]
+    private var sourceChangeStartedAt: [String: ContinuousClock.Instant] = [:]
     private var refreshAfterScan: Set<String> = []
     private var started = false
     private var managedStore: ManagedFileStore?
@@ -209,6 +210,7 @@ final class LibraryModel: ObservableObject {
 
     private func stopMonitoring(_ id: String) {
         sourceDebounces.removeValue(forKey: id)?.cancel()
+        sourceChangeStartedAt[id] = nil
         refreshAfterScan.remove(id)
         if let watch = folderWatchers.removeValue(forKey: id) {
             watch.watcher.stop()
@@ -221,11 +223,18 @@ final class LibraryModel: ObservableObject {
     private func sourceChanged(_ source: FolderSource) {
         let id = source.id
         guard folderWatchers[id] != nil else { return }
+        let now = ContinuousClock.now
+        let firstChange = sourceChangeStartedAt[id] ?? now
+        sourceChangeStartedAt[id] = firstChange
+        // Keep the quiet-period debounce, but do not starve a continuously busy
+        // source. refresh(_:) already coalesces changes while a scan is running.
+        let deadline = min(now.advanced(by: .seconds(1)), firstChange.advanced(by: .seconds(5)))
         sourceDebounces[id]?.cancel()
         sourceDebounces[id] = Task { [weak self] in
-            do { try await Task.sleep(for: .seconds(1)) } catch { return }
+            do { try await Task.sleep(until: deadline, clock: .continuous) } catch { return }
             guard let self else { return }
             self.sourceDebounces[id] = nil
+            self.sourceChangeStartedAt[id] = nil
             guard self.folderWatchers[id] != nil else { return }
             self.refresh(source)
         }
@@ -494,6 +503,7 @@ final class LibraryModel: ObservableObject {
 
     func cancelScan(_ source: FolderSource) {
         sourceDebounces.removeValue(forKey: source.id)?.cancel()
+        sourceChangeStartedAt[source.id] = nil
         refreshAfterScan.remove(source.id)
         scanTasks[source.id]?.cancel()
     }
