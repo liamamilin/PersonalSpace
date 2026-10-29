@@ -18,3 +18,5 @@ xcodebuild -project PersonalSpace.xcodeproj -scheme PersonalSpace \
 截图：`gui/01-auto-added.png`、`02-selected-metadata-updated.png`、`03-moved-out-unavailable.png`、`04-returned-available.png`、`05-two-sources-40-files.png`、`06-restarted-monitoring.png`（均位于上述本机目录）。
 
 **剩余问题和下一个能力**：未定位 macOS 服务内部高 CPU 的成因；本次没有为系统服务异常增加应用轮询或后台服务。当前测试和真实自动刷新回归通过，停止本轮，不进入 M11。
+
+后续高 CPU 因果排查：已找到早于 M1 的系统 CPU 报告，并完成应用启停、真实批量更新与三次测试宿主重启对照，见 [追查记录](INVESTIGATION.md)。
