@@ -196,4 +196,79 @@ final class FolderWatchingTests: XCTestCase {
         _ = try? await writer.value
     }
 
+    func testHiddenLogChangesDoNotRescanButVisibleChangesStillRefresh() async throws {
+        let root = try workspace()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let database = try LibraryDatabase(path: root.appendingPathComponent("library.sqlite").path)
+        let folder = try await source("A", root: root, database: database)
+        try Data("visible".utf8).write(to: folder.appendingPathComponent("visible.txt"))
+        let hidden = folder.appendingPathComponent(".activity.log")
+        try Data("hidden".utf8).write(to: hidden)
+        let model = LibraryModel(database: database)
+        await model.start()
+        try await waitForFiles(1, sourceID: "A", database: database, model: model)
+        // Settle the initial directory events before measuring hidden-only writes.
+        try await Task.sleep(for: .seconds(2))
+        let initial = try await database.sources().first?.lastScannedAt
+        XCTAssertNotNil(initial)
+        for sequence in 0..<36 {
+            try Data("hidden update \(sequence)".utf8).write(to: hidden)
+            try await Task.sleep(for: .milliseconds(150))
+        }
+        try await Task.sleep(for: .seconds(2))
+        let afterHidden = try await database.sources().first?.lastScannedAt
+        XCTAssertEqual(afterHidden, initial, "Excluded hidden content must not trigger a full rescan")
+        try Data("new visible content".utf8).write(to: folder.appendingPathComponent("new.txt"))
+        try await waitForFiles(2, sourceID: "A", database: database, model: model)
+    }
+
+    func testAuthorizedHiddenRootRefreshesVisibleFilesAndTheirRemoval() async throws {
+        let root = try workspace()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let database = try LibraryDatabase(path: root.appendingPathComponent("library.sqlite").path)
+        let folder = try await source(".chosen", root: root, database: database)
+        let model = LibraryModel(database: database)
+        await model.start()
+        try await waitForFiles(0, sourceID: ".chosen", database: database, model: model)
+        let visible = folder.appendingPathComponent("visible.txt")
+        try Data("visible".utf8).write(to: visible)
+        try await waitForFiles(1, sourceID: ".chosen", database: database, model: model)
+        let files = try await database.files(FileQuery(sourceID: ".chosen")).files
+        let id = try XCTUnwrap(files.first?.id)
+        try FileManager.default.moveItem(at: visible, to: folder.appendingPathComponent(".hidden.txt"))
+        try await waitForFiles(0, sourceID: ".chosen", database: database, model: model)
+        let missing = try await database.file(id: id)
+        XCTAssertNotNil(missing)
+        XCTAssertEqual(missing?.isAvailable, false)
+    }
+
+    func testHiddenHardLinkChangesStillRefreshVisibleFileMetadata() async throws {
+        let root = try workspace()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let database = try LibraryDatabase(path: root.appendingPathComponent("library.sqlite").path)
+        let folder = try await source("A", root: root, database: database)
+        let visible = folder.appendingPathComponent("receipt.txt")
+        try Data("original".utf8).write(to: visible)
+        let hidden = folder.appendingPathComponent(".linked.txt")
+        try FileManager.default.linkItem(at: visible, to: hidden)
+        let model = LibraryModel(database: database)
+        await model.start()
+        try await waitForFiles(1, sourceID: "A", database: database, model: model)
+        let payload = Data("updated through a hidden hard link".utf8)
+        let handle = try FileHandle(forWritingTo: hidden)
+        try handle.truncate(atOffset: 0)
+        try handle.write(contentsOf: payload)
+        try handle.close()
+        XCTAssertEqual(try Data(contentsOf: visible), payload)
+        let deadline = Date().addingTimeInterval(12)
+        var bytes: Int64?
+        while Date() < deadline {
+            let files = try await database.files(FileQuery(sourceID: "A")).files
+            bytes = files.first?.bytes
+            if bytes == Int64(payload.count), model.scanning["A"] == nil { break }
+            try await Task.sleep(for: .milliseconds(100))
+        }
+        XCTAssertEqual(bytes, Int64(payload.count))
+    }
+
 }
