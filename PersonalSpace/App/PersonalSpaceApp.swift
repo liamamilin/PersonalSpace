@@ -37,6 +37,10 @@ struct LibraryCommands: Commands {
         CommandGroup(after: .textEditing) {
             Button("搜索资料") { model.searchFocusRequest += 1 }.keyboardShortcut("f")
         }
+        CommandGroup(after: .sidebar) {
+            Button("显示或隐藏详情") { model.inspectorToggleRequest += 1 }
+                .keyboardShortcut("i", modifiers: [.command, .option]).disabled(!model.hasInspectorSelection)
+        }
         CommandMenu("资料") {
             Button("系统预览") { model.quickLook() }.disabled(model.selectedFile == nil)
             Button("打开可用文件") { model.openSelected() }.keyboardShortcut("o")

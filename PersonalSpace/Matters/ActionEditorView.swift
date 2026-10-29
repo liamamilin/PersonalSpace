@@ -98,28 +98,30 @@ struct ActionTimingView: View {
             if let due = action.dueDate {
                 Text("行动日期：" + due.formatted(date: .abbreviated, time: .omitted))
             }
-            if let reminder = action.remindAt, action.dateConfirmed {
-                Text("提醒时间：" + reminder.formatted(date: .abbreviated, time: .shortened))
-            } else {
-                Text("尚未确认具体提醒时间")
-            }
             if let actual = model.pendingReminderDates[action.id] {
                 Label("系统待发送：" + actual.formatted(date: .abbreviated, time: .shortened), systemImage: "bell.badge")
+                if let confirmed = action.remindAt, abs(confirmed.timeIntervalSince(actual)) > 1 {
+                    Text("确认时间：" + confirmed.formatted(date: .abbreviated, time: .shortened))
+                }
+            } else if let reminder = action.remindAt, action.dateConfirmed {
+                Text("提醒时间：" + reminder.formatted(date: .abbreviated, time: .shortened))
+                if ["active", "needs_date"].contains(action.state) {
+                    Label(model.deliveredActionIDs.contains(action.id) ? "已送达通知中心" : "当前没有待发送通知",
+                          systemImage: model.deliveredActionIDs.contains(action.id) ? "bell" : "bell.slash")
+                }
             } else {
-                Label(model.deliveredActionIDs.contains(action.id) ? "已送达通知中心" : "当前没有待发送通知",
-                      systemImage: model.deliveredActionIDs.contains(action.id) ? "bell" : "bell.slash")
+                Text("尚未确认提醒时间，不安排系统通知。")
             }
             if model.canRescheduleReminder(action) {
                 Button(model.reschedulingActionIDs.contains(action.id) ? "正在安排…" : "重新安排提醒", systemImage: "bell.badge") {
                     recoveryResult = nil
                     Task { recoveryResult = await model.rescheduleReminder(actionID: action.id) }
-                }.controlSize(.small)
-                    .disabled(model.reschedulingActionIDs.contains(action.id))
+                }.controlSize(.small).disabled(model.reschedulingActionIDs.contains(action.id))
             }
-            if let recoveryResult {
-                Text(recoveryResult.message)
-                    .foregroundStyle(recoveryResult.scheduled ? Color.secondary : Color.orange)
+            if let recoveryResult, !recoveryResult.scheduled {
+                Text(recoveryResult.message).foregroundStyle(.orange)
             }
         }.font(.caption).foregroundStyle(.secondary)
+            .onChange(of: action.updatedAt) { recoveryResult = nil }
     }
 }

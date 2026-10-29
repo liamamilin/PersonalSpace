@@ -67,6 +67,47 @@ final class BackupTests: XCTestCase {
         try encoder.encode(manifest).write(to: directory.appendingPathComponent("manifest.json"))
     }
 
+    func testDirectValidationDoesNotCreateCopiesOrChangeBackup() async throws {
+        let root = try workspace()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let fixture = try await fixture(in: root)
+        let backup = root.appendingPathComponent("Backup")
+        let manifest = try await LibraryBackup.export(database: fixture.database, vaultRoot: fixture.vault, to: backup)
+        let before = try FileManager.default.contentsOfDirectory(atPath: root.path).sorted()
+        for _ in 0..<2 {
+            let summary = try await LibraryBackup.inspect(at: backup)
+            XCTAssertEqual(summary.managedCount, 1)
+            XCTAssertEqual(summary.matterCount, 1)
+            XCTAssertEqual(summary.manifest, manifest)
+        }
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: root.path).sorted(), before)
+        let verified = try await LibraryBackup.verify(at: backup)
+        XCTAssertEqual(verified, manifest)
+    }
+
+    func testTemporaryPreviewCleanupNeverRemovesBackupOrFormalLibrary() async throws {
+        let root = try workspace()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let fixture = try await fixture(in: root)
+        let backup = root.appendingPathComponent("Backup")
+        let manifest = try await LibraryBackup.export(database: fixture.database, vaultRoot: fixture.vault, to: backup)
+        let preview = try await LibraryBackup.makePreview(from: backup)
+        defer { try? LibraryBackup.removePreview(at: preview) }
+        let previewStore = ManagedFileStore(root: preview.appendingPathComponent("Vault"))
+        XCTAssertEqual(try Data(contentsOf: previewStore.url(for: fixture.copy.relativePath)), fixture.bytes)
+        try LibraryBackup.removePreview(at: preview)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: preview.path))
+        try LibraryBackup.removePreview(at: preview) // Dismiss/quit cleanup can coincide.
+        XCTAssertThrowsError(try LibraryBackup.removePreview(at: backup))
+        let formal = root.appendingPathComponent("FormalLibrary")
+        _ = try await LibraryBackup.restore(from: backup, to: formal)
+        XCTAssertThrowsError(try LibraryBackup.removePreview(at: formal))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: formal.appendingPathComponent("library.sqlite").path))
+        let verified = try await LibraryBackup.verify(at: backup)
+        XCTAssertEqual(verified, manifest)
+        XCTAssertEqual(try Data(contentsOf: fixture.original), fixture.bytes)
+    }
+
     func testWALDatabaseAndOnlyReferencedVaultCopyExportVerifyAndRestoreIntoNewLibrary() async throws {
         let root = try workspace()
         defer { try? FileManager.default.removeItem(at: root) }

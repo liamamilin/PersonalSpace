@@ -6,6 +6,7 @@ import UniformTypeIdentifiers
 final class LibraryModel: ObservableObject {
     @Published var matters: [MatterRecord] = []
     @Published var actions: [ActionRecord] = []
+    @Published var inspectorToggleRequest = 0
     @Published var selectedMatterID: String?
     @Published var selectedActionID: String?
     @Published var matterFacts: [FactRecord] = []
@@ -25,6 +26,8 @@ final class LibraryModel: ObservableObject {
     @Published var backupMessage: String?
     @Published var restoredLibrary: RestoredLibrary?
     @Published var backupCandidate: BackupCandidate?
+    @Published var verifiedBackup: BackupCandidate?
+    private var backupPreviewDirectory: URL?
     @Published private(set) var pendingLibrary: LibraryLocation?
     @Published private(set) var retainedLibrary: LibraryLocation?
     private(set) var libraryLocation: LibraryLocation?
@@ -102,6 +105,12 @@ final class LibraryModel: ObservableObject {
         return FileQuery(search: isObjectsList ? "" : search, sourceID: isSource ? selectedSourceID : nil,
             objectID: currentObjectID, managedOnly: selectedSourceID == "managed", inboxOnly: isInbox, searchBody: searchBody,
             sort: sort, ascending: ascending, limit: limit)
+    }
+    var hasInspectorSelection: Bool {
+        if isObjectsList { return selectedObject != nil }
+        if isActionsList { return selectedActionID != nil && selectedMatter != nil }
+        if isMattersList { return selectedMatter != nil }
+        return selectedFile != nil
     }
     var isScanning: Bool { !scanning.isEmpty }
 
@@ -543,7 +552,7 @@ final class LibraryModel: ObservableObject {
         if previewURL == nil { previewError = managedError ?? originalError }
     }
 
-    private func releasePreview() {
+    func releasePreview() {
         previewURL = nil
         originalURL = nil
         managedURL = nil
@@ -1103,6 +1112,8 @@ final class LibraryModel: ObservableObject {
                     try await restored.prepareRestoredLibrary()
                     try restored.queue.close()
                 } catch { try? restored.queue.close(); throw error }
+                try JSONEncoder().encode(RestoredLibraryOrigin(name: candidate.url.lastPathComponent,
+                    date: candidate.summary.manifest.createdAt)).write(to: destination.root.appendingPathComponent("origin.json"), options: .atomic)
                 try await Task.detached(priority: .utility) {
                     try librarySelection.scheduleSwitch(to: destination, from: libraryLocation)
                 }.value
@@ -1149,31 +1160,63 @@ final class LibraryModel: ObservableObject {
     func restoreBackup() {
         guard !backupBusy else { return }
         let panel = NSOpenPanel()
-        panel.title = "选择 PersonalSpace 备份"
-        panel.message = "完整校验后查看备份中的托管凭证。当前资料库不会被替换。"
+        panel.title = "验证并查看 PersonalSpace 备份"
+        panel.message = "直接校验原备份，不创建恢复资料库。需要预览时才建立可清理的临时副本。"
         panel.canChooseFiles = false
         panel.canChooseDirectories = true
         panel.allowsMultipleSelection = false
         guard panel.runModal() == .OK, let source = panel.url else { return }
         backupBusy = true
-        backupMessage = "正在校验备份并恢复到全新测试资料库…"
+        verifiedBackup = nil
+        backupMessage = "正在校验备份内容与完整性…"
         Task {
             let scoped = source.startAccessingSecurityScopedResource()
             defer { if scoped { source.stopAccessingSecurityScopedResource() }; backupBusy = false }
             do {
-                let support = try FileManager.default.url(for: .applicationSupportDirectory,
-                    in: .userDomainMask, appropriateFor: nil, create: true)
-                let parent = support.appendingPathComponent("PersonalSpace/RestoredLibraries", isDirectory: true)
-                try FileManager.default.createDirectory(at: parent, withIntermediateDirectories: true)
-                let destination = parent.appendingPathComponent(UUID().uuidString, isDirectory: true)
-                _ = try await LibraryBackup.restore(from: source, to: destination)
-                let restored = try LibraryDatabase(path: destination.appendingPathComponent("library.sqlite").path)
-                let copies = try await restored.files(FileQuery(managedOnly: true, limit: Int.max)).files
-                restoredLibrary = RestoredLibrary(root: destination, files: copies)
-                backupMessage = "备份校验与独立恢复完成：\(copies.count) 份托管凭证可供检查。当前资料库未替换，提醒未重新安排。"
-            } catch { backupMessage = "恢复未完成，当前资料库保持原状：" + error.localizedDescription }
+                let bookmark = try FolderAccess.bookmark(for: source)
+                let summary = try await LibraryBackup.inspect(at: source)
+                verifiedBackup = BackupCandidate(url: source, bookmark: bookmark, summary: summary)
+                backupMessage = "备份验证通过，未创建永久副本。可预览托管凭证，或确认后恢复并启用。"
+            } catch { backupMessage = "备份验证未通过：" + error.localizedDescription }
         }
     }
+
+    func previewVerifiedBackup(_ candidate: BackupCandidate) {
+        guard !backupBusy else { return }
+        finishBackupPreview()
+        backupBusy = true
+        backupMessage = "正在准备临时预览副本…"
+        Task {
+            defer { backupBusy = false }
+            do {
+                let source = FolderSource(id: "backup", name: "备份", path: candidate.url.path,
+                    bookmark: candidate.bookmark, lastScannedAt: nil, lastError: nil, fileCount: 0)
+                let access = try FolderAccess.resolve(source)
+                defer { access.url.stopAccessingSecurityScopedResource() }
+                let destination = try await LibraryBackup.makePreview(from: access.url)
+                backupPreviewDirectory = destination
+                let restored = try LibraryDatabase(path: destination.appendingPathComponent("library.sqlite").path)
+                defer { try? restored.queue.close() }
+                let copies = try await restored.files(FileQuery(managedOnly: true, limit: Int.max)).files
+                restoredLibrary = RestoredLibrary(root: destination, files: copies, title: "备份临时预览", temporary: true)
+                backupMessage = "临时预览已准备好，关闭预览后清理；正式资料库保持不变。"
+            } catch {
+                finishBackupPreview()
+                backupMessage = "无法预览备份：" + error.localizedDescription
+            }
+        }
+    }
+
+    func finishBackupPreview() {
+        guard let directory = backupPreviewDirectory else { return }
+        do {
+            try LibraryBackup.removePreview(at: directory)
+            backupPreviewDirectory = nil
+            if restoredLibrary?.temporary == true { restoredLibrary = nil }
+            backupMessage = "临时预览副本已清理，原备份与正式资料库保持不变。"
+        } catch { backupMessage = "临时预览副本未能清理：" + error.localizedDescription }
+    }
+
 }
 
 private enum DocumentReadError: LocalizedError {

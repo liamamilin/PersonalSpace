@@ -40,15 +40,15 @@ struct SourcesView: View {
                             Text("选择对应文件夹即可恢复访问，新电脑上的路径可以不同；已有资料关联保留。")
                                 .font(.caption).foregroundStyle(.secondary)
                         }
-                        if let error = source.lastError {
+                        if !source.needsAuthorization, let error = source.lastError {
                             Label(error, systemImage: "exclamationmark.triangle").font(.callout).foregroundStyle(.orange)
-                        } else {
+                        } else if !source.needsAuthorization {
                             Text(source.lastScannedAt.map { "上次扫描：" + $0.formatted(date: .abbreviated, time: .shortened) } ?? "尚未完成扫描")
                                 .font(.caption).foregroundStyle(.secondary)
                         }
-                        if let error = model.monitoringErrors[source.id] {
+                        if !source.needsAuthorization, source.lastError == nil, let error = model.monitoringErrors[source.id] {
                             Label(error, systemImage: "exclamationmark.triangle").font(.caption).foregroundStyle(.orange)
-                        } else if model.monitoredSourceIDs.contains(source.id) {
+                        } else if !source.needsAuthorization, model.monitoredSourceIDs.contains(source.id) {
                             Label("自动更新已开启", systemImage: "arrow.triangle.2.circlepath").font(.caption).foregroundStyle(.secondary)
                         }
                         HStack {

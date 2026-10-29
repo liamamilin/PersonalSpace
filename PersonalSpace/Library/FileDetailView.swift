@@ -5,6 +5,9 @@ struct SystemPreview: NSViewRepresentable {
     let url: URL
     func makeNSView(context: Context) -> QLPreviewView {
         let view = QLPreviewView(frame: .zero, style: .normal)!
+        // SwiftUI can move a preview between Inspector and popover windows.
+        // Only dismantling owns close(); a closed QLPreviewView cannot be reused.
+        view.shouldCloseWithWindow = false
         view.autostarts = true
         view.previewItem = url as NSURL
         return view
@@ -24,171 +27,87 @@ struct FileDetailView: View {
                 PhotoDetailView(file: file)
             } else if let file = model.selectedFile {
                 ScrollView {
-                    VStack(alignment: .leading, spacing: 20) {
-                        VStack(alignment: .leading, spacing: 6) {
+                    VStack(alignment: .leading, spacing: 16) {
+                        VStack(alignment: .leading, spacing: 4) {
                             Text(file.name).font(.headline).textSelection(.enabled)
-                            Text("\(file.kind) · \(file.size)").font(.subheadline).foregroundStyle(.secondary)
+                            Text(file.kind + " · " + file.size + " · " + file.sourceName)
+                                .font(.caption).foregroundStyle(.secondary)
                         }
-                        if let url = model.previewURL {
-                            VStack(alignment: .leading, spacing: 8) {
-                                Text(model.previewIsManaged ? "正在预览托管副本" : "正在预览原文件")
-                                    .font(.caption).foregroundStyle(.secondary)
-                                SystemPreview(url: url).frame(height: 250)
-                                    .accessibilityLabel(model.previewIsManaged ? "托管副本系统预览" : "原文件系统预览")
-                            }
-                        } else {
-                            ContentUnavailableView {
-                                Label("文件暂不可用", systemImage: "doc.badge.exclamationmark")
-                            } description: {
-                                Text(model.previewError ?? "请刷新或重新授权来源。")
-                            }.frame(minHeight: 170)
-                        }
-                        if file.isImported {
-                            VStack(alignment: .leading, spacing: 6) {
-                                Label("通过快速收纳保存", systemImage: "tray.and.arrow.down").font(.headline)
-                                Text("原文件保持不变。预览和打开均使用本地托管副本。")
-                                    .font(.callout).foregroundStyle(.secondary)
-                            }
-                        } else { VStack(alignment: .leading, spacing: 10) {
-                            Text("原文件").font(.headline)
-                            if let error = model.originalError {
-                                Label(error, systemImage: "exclamationmark.triangle")
-                                    .font(.callout).foregroundStyle(.secondary)
-                            }
-                            HStack {
-                                Button("打开原件", systemImage: "arrow.up.right.square") { model.openOriginal() }
-                                Button("在 Finder 中显示", systemImage: "folder") { model.revealSelected() }
-                            }.controlSize(.small).disabled(model.originalURL == nil)
-                            if model.originalURL == nil,
-                               let source = model.sources.first(where: { $0.id == file.sourceID }) {
-                                HStack {
-                                    Button("刷新来源") { model.refresh(source) }
-                                    Button("重新授权") { model.addFolders(replacing: source) }
-                                }.controlSize(.small).disabled(model.scanning[source.id] != nil)
-                            }
-                        } }
-                        Divider()
-                        VStack(alignment: .leading, spacing: 10) {
-                            Text("托管副本").font(.headline)
-                            if file.managedCopyPath != nil {
-                                if let error = model.managedError {
-                                    Label(error, systemImage: "exclamationmark.triangle").foregroundStyle(.orange)
-                                } else {
-                                    Label("已保存到本地资料库并完成校验", systemImage: "checkmark.circle")
-                                        .font(.callout).foregroundStyle(.secondary)
-                                }
-                                HStack {
-                                    Button("打开托管副本") { model.openManagedCopy() }
-                                    Button("预览副本", systemImage: "eye") { model.quickLook(preferManaged: true) }
-                                }.controlSize(.small).disabled(model.managedURL == nil)
-                                if file.isImported {
-                                    Button("在 Finder 中显示副本", systemImage: "folder") { model.revealSelected() }
-                                        .controlSize(.small).disabled(model.managedURL == nil)
-                                }
-                                if let date = file.managedAt {
-                                    Text("保存于 " + date.formatted(date: .abbreviated, time: .shortened))
-                                        .font(.caption).foregroundStyle(.secondary)
-                                }
-                            } else {
-                                Text("主动复制一份凭证；原文件不会移动或修改。")
-                                    .font(.callout).foregroundStyle(.secondary)
-                                if model.archivingID == file.id {
-                                    HStack { ProgressView().controlSize(.small); Text("正在复制并校验…") }
-                                } else {
-                                    Button("保存副本到资料库", systemImage: "externaldrive.badge.plus") {
-                                        Task { await model.archiveSelected() }
-                                    }.disabled(model.originalURL == nil || model.archivingID != nil)
-                                }
-                            }
-                        }
-                        Divider()
-                        VStack(alignment: .leading, spacing: 10) {
-                            HStack {
-                                Text("关联的对象").font(.headline)
-                                Spacer()
-                                Button("关联", systemImage: "link") { model.showLinkSheet = true }
-                            }
-                            if model.linkedObjects.isEmpty {
-                                Text("尚未关联个人对象").font(.callout).foregroundStyle(.secondary)
-                            }
-                            ForEach(model.linkedObjects) { object in
-                                HStack {
-                                    Button(object.name) { model.showObject(object.id) }.buttonStyle(.link)
-                                    Spacer()
-                                    Button("解除关联", systemImage: "xmark") {
-                                        Task { await model.unlink(file.id, from: object.id) }
-                                    }.labelStyle(.iconOnly).buttonStyle(.borderless)
-                                        .help("解除与「\(object.name)」的关联，保留原文件")
-                                }
-                            }
-                            if model.currentObjectID != nil {
-                                Button("在资料库中查看") { Task { await model.showInLibrary(file) } }
-                            }
-                        }
-                        Divider()
-                        VStack(alignment: .leading, spacing: 10) {
-                            Text("事务跟进").font(.headline)
-                            Menu("从此凭证创建事务", systemImage: "doc.badge.plus") {
+                        fileActions(file)
+                        preview
+                        HStack {
+                            Button("关联对象…", systemImage: "link") { model.showLinkSheet = true }
+                            Menu("创建事务", systemImage: "doc.badge.plus") {
                                 ForEach(MatterKind.allCases) { kind in
                                     Button("创建" + kind.title) { model.createMatter(kind: kind) }
                                 }
                             }
-                            Text("可按需识别文字、校对事实，再填写明确的提醒日期。")
-                                .font(.callout).foregroundStyle(.secondary)
-                        }
-                        Divider()
-                        SensitivityControl(file: file)
-                        Divider()
-                        VStack(alignment: .leading, spacing: 10) {
-                            Text("全文搜索").font(.headline)
-                            if let date = file.textIndexedAt {
-                                Label("已允许保存此正文供搜索", systemImage: "text.badge.checkmark")
-                                    .font(.callout).foregroundStyle(.secondary)
-                                Text("更新于 " + date.formatted(date: .abbreviated, time: .shortened))
-                                    .font(.caption).foregroundStyle(.secondary)
-                                Button("重新识别并保存正文") { Task { await model.indexSelectedDocument() } }
-                                    .disabled(model.indexingID != nil || model.previewURL == nil || (!file.isImported && (!file.isAvailable || file.sourceError != nil)))
-                                Button("移除正文索引") { Task { await model.removeDocumentText(file) } }
-                                if !file.isImported, !file.isAvailable {
-                                    Text("原件不可用期间，此正文不参与全文搜索。")
-                                        .font(.caption).foregroundStyle(.secondary)
-                                }
-                            } else if file.sensitivity != "normal" {
-                                Text("此资料已标记敏感或疑似敏感，不读取正文、不保存正文索引、不交给模型。")
-                                    .font(.callout).foregroundStyle(.secondary)
-                            } else {
-                                if file.textNeedsRefresh {
-                                    Label("文件已变化，旧正文已移除。请重新识别。", systemImage: "arrow.clockwise")
-                                        .font(.callout).foregroundStyle(.secondary)
-                                }
-                                Text("只处理你选择的普通凭证，识别正文将以明文保存在本机，用于全文搜索。")
-                                    .font(.callout).foregroundStyle(.secondary)
-                                if model.indexingID == file.id {
-                                    HStack { ProgressView().controlSize(.small); Text("正在识别并保存正文…") }
-                                } else {
-                                    Button(file.textNeedsRefresh ? "重新识别并保存正文" : "识别并保存正文以供搜索") { Task { await model.indexSelectedDocument() } }
-                                        .disabled(model.indexingID != nil || model.previewURL == nil || (!file.isImported && (!file.isAvailable || file.sourceError != nil)))
+                        }.controlSize(.small)
+                        if !model.linkedObjects.isEmpty {
+                            VStack(alignment: .leading, spacing: 8) {
+                                Text("关联对象").font(.caption).foregroundStyle(.secondary)
+                                ForEach(model.linkedObjects) { object in
+                                    HStack {
+                                        Button(object.name) { model.showObject(object.id) }.buttonStyle(.link)
+                                        Spacer()
+                                        Menu {
+                                            Button("解除与此对象的关联") {
+                                                Task { await model.unlink(file.id, from: object.id) }
+                                            }
+                                        } label: { Image(systemName: "ellipsis") }
+                                            .menuStyle(.borderlessButton).fixedSize()
+                                            .accessibilityLabel("「\(object.name)」的关联操作")
+                                    }
                                 }
                             }
                         }
-                        Divider()
-                        VStack(alignment: .leading, spacing: 14) {
-                            Text("文件信息").font(.headline)
-                            property("来源", value: file.sourceName)
-                            property("大小", value: file.size)
-                            property("修改日期", value: file.modifiedAt?.formatted(date: .abbreviated, time: .shortened) ?? "未知")
-                            property("创建日期", value: file.createdAt?.formatted(date: .abbreviated, time: .shortened) ?? "未知")
-                            property("原始路径", value: file.fullPath)
+                        if let error = model.managedError ?? model.originalError, !file.isImported {
+                            VStack(alignment: .leading, spacing: 8) {
+                                if model.previewURL != nil {
+                                    Label(error, systemImage: "exclamationmark.triangle")
+                                        .font(.callout).foregroundStyle(.secondary)
+                                }
+                                if model.originalURL == nil, let source = model.sources.first(where: { $0.id == file.sourceID }) {
+                                    Button("重新授权来源") { model.addFolders(replacing: source) }
+                                        .controlSize(.small).disabled(model.scanning[source.id] != nil)
+                                }
+                            }
+                        } else if let error = model.managedError {
+                            Label(error, systemImage: "exclamationmark.triangle")
+                                .font(.callout).foregroundStyle(.orange)
                         }
-                        if file.isImported {
-                            Divider()
-                            Button("从 PersonalSpace 移除…", systemImage: "trash", role: .destructive) {
-                                model.requestImportedRemoval(file)
-                            }.disabled(model.removingFileID != nil || model.pendingCopyRemoval != nil)
-                            Text("仅移除本应用中的记录与托管副本。已关联的凭证需先解除关联。")
+                        Divider()
+                        VStack(alignment: .leading, spacing: 5) {
+                            Label(file.managedCopyPath != nil ? "已保存托管副本" : "文件保留在原位置",
+                                  systemImage: file.managedCopyPath != nil ? "externaldrive.badge.checkmark" : "folder")
+                                .font(.callout)
+                            Text(file.isImported ? "快速收纳只复制文件，原文件保持不变。" : "来源扫描只读，托管副本可独立使用。")
+                                .font(.caption).foregroundStyle(.secondary)
+                            if model.archivingID == file.id {
+                                HStack { ProgressView().controlSize(.small); Text("正在复制并校验…") }.font(.caption)
+                            }
+                        }
+                        DisclosureGroup("文件信息") {
+                            VStack(alignment: .leading, spacing: 12) {
+                                property("来源", value: file.sourceName)
+                                property("修改日期", value: file.modifiedAt?.formatted(date: .abbreviated, time: .shortened) ?? "未知")
+                                property("创建日期", value: file.createdAt?.formatted(date: .abbreviated, time: .shortened) ?? "未知")
+                                if let date = file.managedAt { property("副本保存日期", value: date.formatted(date: .abbreviated, time: .shortened)) }
+                                property(file.isImported ? "收纳时原路径（仅供参考）" : "原始路径", value: file.fullPath)
+                            }.padding(.top, 8)
+                        }
+                        if file.textNeedsRefresh {
+                            Label("正文需要更新，旧内容不参与搜索。", systemImage: "arrow.clockwise")
                                 .font(.caption).foregroundStyle(.secondary)
                         }
-                    }.padding(20)
+                        DisclosureGroup("隐私与全文搜索") {
+                            VStack(alignment: .leading, spacing: 16) {
+                                SensitivityControl(file: file)
+                                Divider()
+                                documentSearch(file)
+                            }.padding(.top, 8)
+                        }
+                    }.frame(maxWidth: .infinity, alignment: .leading).padding(20)
                 }
             } else {
                 ContentUnavailableView("选择一份资料", systemImage: "doc.text.magnifyingglass",
@@ -199,6 +118,87 @@ struct FileDetailView: View {
             model.preparePreview()
             await model.reloadLinkedObjects()
         }
+    }
+
+    private func fileActions(_ file: LibraryFile) -> some View {
+        HStack {
+            Button(model.previewIsManaged ? "打开托管副本" : "打开原件", systemImage: "arrow.up.right.square") {
+                if model.previewIsManaged { model.openManagedCopy() } else { model.openOriginal() }
+            }
+                .disabled(model.previewURL == nil)
+            Button("系统预览", systemImage: "eye") { model.quickLook(preferManaged: model.previewIsManaged) }
+                .disabled(model.previewURL == nil).help("放大预览（空格）")
+            Spacer(minLength: 0)
+            Menu {
+                Button(file.isImported ? "在 Finder 中显示副本" : "在 Finder 中显示原件") { model.revealSelected() }
+                    .disabled(file.isImported ? model.managedURL == nil : model.originalURL == nil)
+                if !file.isImported, file.managedCopyPath != nil {
+                    Button("打开托管副本") { model.openManagedCopy() }.disabled(model.managedURL == nil)
+                    Button("预览托管副本") { model.quickLook(preferManaged: true) }.disabled(model.managedURL == nil)
+                } else if file.managedCopyPath == nil {
+                    Button("保存副本到资料库") { Task { await model.archiveSelected() } }
+                        .disabled(model.originalURL == nil || model.archivingID != nil)
+                }
+                if model.currentObjectID != nil {
+                    Button("在所有资料中查看") { Task { await model.showInLibrary(file) } }
+                }
+                if file.isImported {
+                    Divider()
+                    Button("从 PersonalSpace 移除…", role: .destructive) { model.requestImportedRemoval(file) }
+                        .disabled(model.removingFileID != nil || model.pendingCopyRemoval != nil)
+                }
+            } label: { Image(systemName: "ellipsis") }
+                .menuStyle(.borderlessButton).fixedSize().accessibilityLabel("文件操作")
+        }.controlSize(.small)
+    }
+
+    @ViewBuilder private var preview: some View {
+        if let url = model.previewURL {
+            VStack(alignment: .leading, spacing: 6) {
+                Text(model.previewIsManaged ? "预览托管副本" : "预览原文件").font(.caption).foregroundStyle(.secondary)
+                SystemPreview(url: url).frame(height: 200)
+                    .accessibilityLabel(model.previewIsManaged ? "托管副本系统预览" : "原文件系统预览")
+            }
+        } else {
+            ContentUnavailableView {
+                Label("文件暂不可用", systemImage: "doc.badge.exclamationmark")
+            } description: { Text(model.previewError ?? "请刷新或重新授权来源。") }.frame(minHeight: 150)
+        }
+    }
+
+    @ViewBuilder private func documentSearch(_ file: LibraryFile) -> some View {
+        Text("全文搜索").font(.headline)
+        if let date = file.textIndexedAt {
+            Label("此正文已加入搜索", systemImage: "text.badge.checkmark").font(.callout).foregroundStyle(.secondary)
+            Text("更新于 " + date.formatted(date: .abbreviated, time: .shortened)).font(.caption).foregroundStyle(.secondary)
+            Button("重新识别并保存正文") { Task { await model.indexSelectedDocument() } }
+                .disabled(!canIndex(file))
+            Button("移除正文索引") { Task { await model.removeDocumentText(file) } }
+            if !file.isImported, !file.isAvailable || file.sourceError != nil {
+                Text("原件不可用期间，此正文不参与全文搜索。").font(.caption).foregroundStyle(.secondary)
+            }
+        } else if file.sensitivity != "normal" {
+            Text("敏感或疑似敏感资料不读取正文、不保存正文索引、不交给模型。")
+                .font(.callout).foregroundStyle(.secondary)
+        } else {
+            if file.textNeedsRefresh {
+                Label("文件已变化，旧正文已移除。请重新识别。", systemImage: "arrow.clockwise")
+                    .font(.callout).foregroundStyle(.secondary)
+            }
+            Text("仅在你确认后识别，正文以明文保存在本机供全文搜索。")
+                .font(.callout).foregroundStyle(.secondary)
+            if model.indexingID == file.id {
+                HStack { ProgressView().controlSize(.small); Text("正在识别并保存正文…") }
+            } else {
+                Button(file.textNeedsRefresh ? "重新识别并保存正文" : "识别并保存正文以供搜索") { Task { await model.indexSelectedDocument() } }
+                    .disabled(!canIndex(file))
+            }
+        }
+    }
+
+    private func canIndex(_ file: LibraryFile) -> Bool {
+        model.indexingID == nil && model.previewURL != nil
+            && (file.isImported || (file.isAvailable && file.sourceError == nil))
     }
 
     private func property(_ label: String, value: String) -> some View {

@@ -29,6 +29,27 @@ struct BackupCandidate: Identifiable, Sendable {
 }
 
 struct LibraryBackup: Sendable {
+    static func makePreview(from backup: URL) async throws -> URL {
+        let directory = FileManager.default.temporaryDirectory.resolvingSymlinksInPath()
+            .appendingPathComponent("PersonalSpace-BackupPreview-" + UUID().uuidString, isDirectory: true)
+        _ = try await restore(from: backup, to: directory)
+        return directory
+    }
+
+    static func removePreview(at directory: URL) throws {
+        let parent = FileManager.default.temporaryDirectory.resolvingSymlinksInPath()
+        let prefix = "PersonalSpace-BackupPreview-"
+        guard directory.deletingLastPathComponent().standardizedFileURL == parent.standardizedFileURL,
+              directory.lastPathComponent.hasPrefix(prefix),
+              UUID(uuidString: String(directory.lastPathComponent.dropFirst(prefix.count))) != nil else {
+            throw BackupError.invalidPath
+        }
+        if FileManager.default.fileExists(atPath: directory.path) {
+            try FileManager.default.removeItem(at: directory)
+        }
+    }
+
+
     static func inspect(at directory: URL) async throws -> BackupSummary {
         try await Task.detached(priority: .utility) {
             let manifest = try verifyFiles(at: directory)

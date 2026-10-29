@@ -5,7 +5,8 @@ struct LibraryView: View {
     @EnvironmentObject private var model: LibraryModel
     @Environment(\.openWindow) private var openWindow
     @Environment(\.scenePhase) private var scenePhase
-    @State private var showInspector = true
+    @AppStorage("showInspector") private var showInspector = true
+    @State private var inspectorPresented = false
     @State private var compactWindow = false
     @State private var showCompactInspector = false
     @State private var dropTargeted = false
@@ -14,6 +15,12 @@ struct LibraryView: View {
 
     private var queryKey: String {
         "\(model.search)|\(model.searchBody)|\(model.selectedSourceID)|\(model.sort.rawValue)|\(model.ascending)|\(model.limit)"
+    }
+
+    private var hasInspectorContent: Bool {
+        if model.isObjectsList { return !model.objects.isEmpty }
+        if model.isMattersList || model.isActionsList { return !model.matters.isEmpty }
+        return !model.files.isEmpty
     }
 
     var body: some View {
@@ -37,7 +44,7 @@ struct LibraryView: View {
                         Label("已托管", systemImage: "externaldrive.badge.checkmark").tag("managed")
                         Label("照片图库", systemImage: "photo.on.rectangle").tag(PhotoLibraryController.sourceID)
                     }
-                    Section("个人对象") {
+                    Section("整理") {
                         Label("个人对象", systemImage: "desktopcomputer").tag("objects")
                     }
                     Section("跟进") {
@@ -59,7 +66,7 @@ struct LibraryView: View {
                             .tag(source.id)
                             .help(source.path)
                             .contextMenu {
-                                Button("刷新来源") { model.refresh(source) }.disabled(model.scanning[source.id] != nil)
+                                Button("刷新来源") { model.refresh(source) }.disabled(source.needsAuthorization || model.scanning[source.id] != nil)
                                 Button("重新授权") { model.addFolders(replacing: source) }
                                     .disabled(model.scanning[source.id] != nil)
                             }
@@ -70,7 +77,7 @@ struct LibraryView: View {
                 }.listStyle(.sidebar)
                 Divider()
                 HStack {
-                    SettingsLink { Label("来源设置", systemImage: "gearshape") }
+                    SettingsLink { Label("设置", systemImage: "gearshape") }
                         .buttonStyle(.plain)
                     Spacer()
                 }.padding(16)
@@ -113,7 +120,7 @@ struct LibraryView: View {
                     }
                     .padding(12).background(.orange.opacity(0.12))
                 }
-                if model.isInbox {
+                if model.isInbox && !model.files.isEmpty {
                     HStack(spacing: 12) {
                         VStack(alignment: .leading, spacing: 4) {
                             Text("快速收纳").font(.headline)
@@ -152,6 +159,7 @@ struct LibraryView: View {
                         Button("编辑", systemImage: "pencil") { model.editObject(object) }
                         Button("添加已有资料", systemImage: "link.badge.plus") { model.showFilePicker = true }
                     }.padding(16)
+                    ObjectMattersView(objectID: object.id, compact: true).padding(.horizontal, 16).padding(.bottom, 12)
                     Divider()
                 }
                 if model.isObjectsList { ObjectsView() }
@@ -165,14 +173,15 @@ struct LibraryView: View {
                         ProgressView().controlSize(.mini)
                         Text("扫描中 · 已发现 \(model.scanning.values.reduce(0, +)) 个文件")
                     } else {
-                        Text(model.isObjectsList ? "\(model.objects.count) 个个人对象" : model.isMattersList ? "共 \(model.matters.count) 个事务" : model.isActionsList ? "\(model.actions.count) 项行动" : "\(model.total) 份资料")
+                        Text(model.isObjectsList ? "\(model.objects.count) 个个人对象" : model.isMattersList ? "共 \(model.matters.count) 个事务" : model.isActionsList ? "\(model.actions.count) 项行动" : (model.search.isEmpty ? "\(model.total) 份资料" : "\(model.total) 条搜索结果"))
                         if model.isFileList && model.selectedFile != nil { Text("· 已选择 1 份") }
                     }
                     Spacer()
                     if model.isFileList && model.files.count < model.total {
                         Button("显示更多") { model.limit += 500 }.buttonStyle(.link)
                     }
-                    Text("本地索引").foregroundStyle(.tertiary)
+                    Text(model.libraryLocation?.title ?? "本机资料库").lineLimit(1).truncationMode(.middle)
+                        .help("当前使用：" + (model.libraryLocation?.title ?? "本机资料库")).foregroundStyle(.tertiary)
                     if model.isFileList && model.searchBody { Text("· 含已允许正文") }
                 }
                 .font(.caption).foregroundStyle(.secondary)
@@ -188,7 +197,7 @@ struct LibraryView: View {
                         .padding(4).allowsHitTesting(false)
                 }
             }
-            .inspector(isPresented: Binding(get: { showInspector && !compactWindow }, set: { showInspector = $0 })) {
+            .inspector(isPresented: $inspectorPresented) {
                 inspectorContent.inspectorColumnWidth(min: 300, ideal: 340, max: 440)
             }
         }
@@ -230,11 +239,9 @@ struct LibraryView: View {
                     Toggle("升序", isOn: $model.ascending)
                 } label: { Label("排序", systemImage: "arrow.up.arrow.down") }
                     .disabled(!model.isFileList)
-                Button("详情", systemImage: "sidebar.right") {
-                    if compactWindow { showCompactInspector.toggle() }
-                    else { showInspector.toggle() }
-                }
-                    .help("显示或隐藏文件详情")
+                Button("详情", systemImage: "sidebar.right") { toggleInspector() }
+                    .disabled(!model.hasInspectorSelection && !inspectorPresented)
+                    .help("显示或隐藏详情（⌥⌘I）")
             }
         }
         .frame(minWidth: 720, minHeight: 500)
@@ -265,6 +272,16 @@ struct LibraryView: View {
             await model.reload()
         }
         .onChange(of: model.searchFocusRequest) { searchFocused = true }
+        .onChange(of: model.inspectorToggleRequest) { toggleInspector() }
+        .onChange(of: showInspector && !compactWindow && hasInspectorContent, initial: true) { _, wanted in
+            inspectorPresented = wanted
+        }
+        .onChange(of: model.selectedSourceID) {
+            inspectorPresented = showInspector && !compactWindow && hasInspectorContent
+        }
+        .onChange(of: model.selectedFileID) {
+            if model.selectedFileID == nil { model.releasePreview(); showCompactInspector = false }
+        }
         .onChange(of: model.search) { model.limit = 500 }
         .onChange(of: model.selectedSourceID) { model.limit = 500; showCompactInspector = false }
         .onChange(of: sortOrder) {
@@ -302,6 +319,15 @@ struct LibraryView: View {
         }
     }
 
+    private func toggleInspector() {
+        guard model.hasInspectorSelection || inspectorPresented else { return }
+        if compactWindow { showCompactInspector.toggle() }
+        else {
+            showInspector = !inspectorPresented
+            inspectorPresented = showInspector
+        }
+    }
+
     @ViewBuilder private var inspectorContent: some View {
         if model.isObjectsList { ObjectInfoView() }
         else if model.isMattersList || model.isActionsList { MatterDetailView() }
@@ -335,12 +361,11 @@ struct LibraryView: View {
             ContentUnavailableView {
                 Label("把散落的个人资料放到一个入口", systemImage: "folder.badge.plus")
             } description: {
-                Text("文件保留在原位置，仅建立本地索引。\n添加你希望查找的文件夹，开始使用资料库。")
+                Text("收纳文件以保存可独立使用的副本，\n或添加文件夹，只读查找原位置的资料。")
             } actions: {
                 Button("收纳文件…") { model.chooseImportFiles() }
-                    .disabled(model.storageUnavailable || model.isImporting)
-                Button("添加文件夹") { model.addFolders() }
-                    .buttonStyle(.borderedProminent).disabled(model.storageUnavailable)
+                    .buttonStyle(.borderedProminent).disabled(model.storageUnavailable || model.isImporting)
+                Button("添加文件夹…") { model.addFolders() }.disabled(model.storageUnavailable)
             }.frame(maxWidth: .infinity, maxHeight: .infinity)
         } else if model.files.isEmpty {
             ContentUnavailableView {
@@ -352,7 +377,9 @@ struct LibraryView: View {
                 if !model.search.isEmpty { Button("清除搜索") { model.search = "" } }
                 else if model.currentObjectID != nil {
                     Button("添加已有资料") { model.showFilePicker = true }
-                } else { Button("刷新来源") { model.refreshAll() }.disabled(model.isScanning) }
+                } else if model.selectedSourceID == "managed" {
+                    Button("收纳文件…") { model.chooseImportFiles() }.disabled(model.storageUnavailable || model.isImporting)
+                } else { Button("刷新来源") { model.refreshAll() }.disabled(model.isScanning || model.sources.isEmpty) }
             }.frame(maxWidth: .infinity, maxHeight: .infinity)
         } else {
             Table(model.files, selection: $model.selectedFileID, sortOrder: $sortOrder) {
@@ -369,7 +396,7 @@ struct LibraryView: View {
                             Image(systemName: "exclamationmark.triangle").foregroundStyle(.orange)
                                 .help(file.sourceError ?? "原位置已不可用")
                         }
-                    }.frame(height: 30).help(file.relativePath)
+                    }.frame(height: 26).help(file.name + "\n" + file.relativePath)
                 }.width(min: 170, ideal: 240)
                 TableColumn("类型", value: \.kind) { file in
                     Text(file.kind).foregroundStyle(.secondary).lineLimit(1)
@@ -379,14 +406,19 @@ struct LibraryView: View {
                         .foregroundStyle(.secondary)
                 }.width(min: 80, ideal: 100)
                 TableColumn("大小", value: \.bytes) { file in
-                    Text(file.size).foregroundStyle(.secondary)
+                    Text(file.size).monospacedDigit().foregroundStyle(.secondary).frame(maxWidth: .infinity, alignment: .trailing)
                 }.width(min: 60, ideal: 70)
                 TableColumn("来源", value: \.sourceName) { file in
                     Text(file.sourceName).foregroundStyle(.secondary).lineLimit(1)
                 }.width(min: 65, ideal: 90)
             }
+            .alternatingRowBackgrounds(.disabled)
             .contextMenu(forSelectionType: String.self) { ids in
                 if let id = ids.first {
+                    Button("显示详情") {
+                        model.selectedFileID = id
+                        if compactWindow { showCompactInspector = true } else { showInspector = true }
+                    }
                     Button("系统预览") { model.selectedFileID = id; model.quickLook() }
                     Button("打开可用文件") { model.selectedFileID = id; model.openSelected() }
                     Button("关联到对象…") { model.selectedFileID = id; model.showLinkSheet = true }

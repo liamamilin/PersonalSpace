@@ -1,0 +1,76 @@
+{
+  "version": "0.10.1",
+  "build": 14,
+  "date": "2026-10-29",
+  "environment": "Native macOS; Xcode 27.1; local ad hoc sandboxed Release",
+  "builds": {
+    "Debug": "passed",
+    "Release": "passed"
+  },
+  "tests": {
+    "core": {
+      "run": 74,
+      "failures": 0,
+      "result": "passed",
+      "log": "delivery-core-test.log",
+      "excluded": "PersonalSpaceTests/FolderWatchingTests"
+    },
+    "completeSuite": {
+      "run": 78,
+      "failedCases": 3,
+      "failedAssertions": 7,
+      "result": "failed: native FSEvents timeout",
+      "logs": [
+        "test.log",
+        "regression-test.log"
+      ]
+    }
+  },
+  "gui": {
+    "pathA": {
+      "panelImportPreviewOpenObjectAssociation": "passed",
+      "finderDrop": "user performed and confirmed; application showed new imported file"
+    },
+    "pathB": {
+      "twoIndependentPendingSystemRequests": "observed through UserNotifications-backed UI",
+      "completeOneKeepsOtherPending": "passed",
+      "returnToEvidence": "passed"
+    },
+    "pathC": {
+      "exportVerifyPreviewRestoreRestart": "passed",
+      "restoredVaultPreviewAndDefaultAppOpen": "passed",
+      "sourceReauthorization": "passed",
+      "editRestoredMatter": "passed",
+      "switchToRetainedLibrary": "passed"
+    },
+    "themes": [
+      "light",
+      "dark"
+    ],
+    "widths": [
+      "standard",
+      "narrow (native side tiling)"
+    ],
+    "inspectorShortcutAndDefaultAppOpenFromNarrowPopover": "passed",
+    "quickLookAndInspectorReopenRegression": "passed after fixing closed QLPreviewView lifecycle",
+    "photos": "unconnected permission UI inspected; private photos not accessed"
+  },
+  "backupStorage": {
+    "directVerificationCreatesPermanentCopy": false,
+    "temporaryPreviewsAfterClose": 0,
+    "legacyPermanentPreviewsBefore": 2,
+    "legacyPermanentPreviewsAfter": 2,
+    "formalLibrariesPreserved": true
+  },
+  "syntheticOriginalSHA256Unchanged": true,
+  "authorizedSourceAutoUpdateObservedSeconds": 5.679,
+  "returnedToOriginalLibrary": true,
+  "restoredOriginalSystemAppearance": "automatic",
+  "limitations": [
+    "Three native event integration tests time out; complete suite is not passing.",
+    "Narrow popover controls and open action verified, but window capture omitted popover pixels.",
+    "Photos content not exercised this round.",
+    "No Developer ID signing, notarization or clean-account installation verification."
+  ],
+  "screenshots": "Local before/ and after/ directories; not published"
+}

@@ -17,6 +17,11 @@ evidence/test-summary.json
 # Actual UI screenshots remain local; publish source and text verification.
 evidence/M*/*.png
 
+# Product polish screenshots, raw GUI state and build artifacts stay local.
+evidence/Product-Polish/*
+!evidence/Product-Polish/README.md
+!evidence/Product-Polish/verification.json
+
 # Raw local signing/permission evidence is never published.
 evidence/M5/entitlements.txt
 evidence/M6/entitlements.plist

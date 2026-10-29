@@ -85,7 +85,7 @@ struct MattersView: View {
     private var matterTable: some View {
         Table(filtered, selection: $model.selectedMatterID, sortOrder: $sortOrder) {
             TableColumn("事务", value: \.title) { matter in
-                Label(matter.title, systemImage: (MatterKind(rawValue: matter.kind) ?? .order).image).frame(height: 32)
+                Label(matter.title, systemImage: (MatterKind(rawValue: matter.kind) ?? .order).image).frame(height: 28)
             }.width(min: 150, ideal: 210)
             TableColumn("类型", value: \.kind) { matter in
                 Text((MatterKind(rawValue: matter.kind) ?? .order).title).foregroundStyle(.secondary)
@@ -100,6 +100,7 @@ struct MattersView: View {
                 Text($0.updatedAt.formatted(date: .numeric, time: .omitted)).foregroundStyle(.secondary)
             }.width(min: 80, ideal: 100)
         }
+        .alternatingRowBackgrounds(.disabled)
         .contextMenu(forSelectionType: String.self) { ids in
             if let id = ids.first, let matter = model.matters.first(where: { $0.id == id }) {
                 Button("查看事务") { Task { await model.showMatter(id) } }
@@ -120,6 +121,7 @@ struct MatterDetailView: View {
     @EnvironmentObject private var model: LibraryModel
     @State private var busyActionID: String?
     @State private var editingAction: ActionDraft?
+    @State private var showFinishedActions = false
 
     private var relatedActions: [ActionRecord] {
         model.actions.filter { $0.matterID == model.selectedMatterID }
@@ -132,14 +134,63 @@ struct MatterDetailView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 20) {
                     VStack(alignment: .leading, spacing: 8) {
-                        Label(matter.title, systemImage: (MatterKind(rawValue: matter.kind) ?? .order).image).font(.title2.bold()).textSelection(.enabled)
+                        Label(matter.title, systemImage: (MatterKind(rawValue: matter.kind) ?? .order).image).font(.title3.weight(.semibold)).textSelection(.enabled)
                         Text((MatterKind(rawValue: matter.kind) ?? .order).title + (matter.status == "completed" ? " · 已完成" : " · 跟进中"))
                             .foregroundStyle(.secondary)
+                        ForEach(Array(model.matterFacts.filter { $0.state == "confirmed" && $0.valueType == "date" }.prefix(2))) { fact in
+                            LabeledContent(MatterKind.title(for: fact.key), value: fact.valueText)
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
                         if let object = model.objects.first(where: { $0.id == matter.objectID }) {
                             Label(object.name, systemImage: "desktopcomputer").font(.callout).foregroundStyle(.secondary)
                         }
                         Button("编辑事务与行动", systemImage: "pencil") {
                             Task { await model.editMatter(matter) }
+                        }
+                    }
+                    Divider()
+                    VStack(alignment: .leading, spacing: 12) {
+                        Text("行动与提醒").font(.headline)
+                        if relatedActions.isEmpty {
+                            Text("尚未设置行动").font(.callout).foregroundStyle(.secondary)
+                        }
+                        ForEach(relatedActions.filter { showFinishedActions || ["active", "needs_date"].contains($0.state) || model.selectedActionID == $0.id }) { action in
+                            VStack(alignment: .leading, spacing: 8) {
+                                HStack(alignment: .firstTextBaseline) {
+                                    Text(action.title).font(.callout.weight(.medium)).textSelection(.enabled)
+                                    Spacer(minLength: 8)
+                                    Menu {
+                                        Button("编辑行动…") { editingAction = ActionDraft(action) }
+                                        if ["active", "needs_date"].contains(action.state) {
+                                            Button("取消行动") { update(action, state: "cancelled") }
+                                        }
+                                    } label: { Image(systemName: "ellipsis") }
+                                        .menuStyle(.borderlessButton).fixedSize().disabled(busyActionID != nil)
+                                        .accessibilityLabel(action.title + "的操作")
+                                }
+                                HStack {
+                                    Text(ActionLabels.stateTitle(action.state)).font(.caption).foregroundStyle(.secondary)
+                                    Spacer()
+                                    if ["active", "needs_date"].contains(action.state) {
+                                        Button("标记完成", systemImage: "checkmark") { update(action, state: "done") }
+                                            .controlSize(.small).disabled(busyActionID != nil)
+                                    }
+                                }
+                                ActionTimingView(action: action)
+                            }.padding(8)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .background(model.selectedActionID == action.id ? Color.accentColor.opacity(0.12) : Color.clear)
+                                .clipShape(RoundedRectangle(cornerRadius: 6))
+                                .id(action.id)
+                        }
+                        let finishedCount = relatedActions.filter { ["done", "cancelled"].contains($0.state) }.count
+                        if finishedCount > 0 {
+                            Toggle("显示已完成和已取消（\(finishedCount)）", isOn: $showFinishedActions)
+                                .toggleStyle(.checkbox).font(.caption)
+                        }
+                        Button("添加行动", systemImage: "plus") { editingAction = ActionDraft() }
+                        if let message = model.reminderMessage {
+                            Text(message).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
                         }
                     }
                     Divider()
@@ -189,36 +240,6 @@ struct MatterDetailView: View {
                                     Text("“\(excerpt)”").font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
                                 }
                             }
-                        }
-                    }
-                    Divider()
-                    VStack(alignment: .leading, spacing: 12) {
-                        Text("行动与提醒").font(.headline)
-                        if relatedActions.isEmpty {
-                            Text("尚未设置行动").font(.callout).foregroundStyle(.secondary)
-                        }
-                        ForEach(relatedActions) { action in
-                            VStack(alignment: .leading, spacing: 8) {
-                                Text(action.title).font(.subheadline.bold()).textSelection(.enabled)
-                                Text(ActionLabels.stateTitle(action.state)).font(.caption).foregroundStyle(.secondary)
-                                ActionTimingView(action: action)
-                                Button("编辑行动", systemImage: "pencil") { editingAction = ActionDraft(action) }
-                                    .controlSize(.small)
-                                if action.state == "active" || action.state == "needs_date" {
-                                    HStack {
-                                        Button("标记完成", systemImage: "checkmark") { update(action, state: "done") }
-                                        Button("取消行动") { update(action, state: "cancelled") }
-                                    }.controlSize(.small).disabled(busyActionID != nil)
-                                }
-                            }.padding(8)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                                .background(model.selectedActionID == action.id ? Color.accentColor.opacity(0.12) : Color.clear)
-                                .clipShape(RoundedRectangle(cornerRadius: 6))
-                                .id(action.id)
-                        }
-                        Button("添加行动", systemImage: "plus") { editingAction = ActionDraft() }
-                        if let message = model.reminderMessage {
-                            Text(message).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
                         }
                     }
                     if !matter.notes.isEmpty {
@@ -285,7 +306,7 @@ struct ActionsView: View {
                 Toggle("显示已完成和已取消", isOn: $showFinished).toggleStyle(.checkbox)
                     .frame(maxWidth: .infinity, alignment: .leading).padding(12)
                 List(selection: $model.selectedActionID) {
-                    actionSection("即将处理", state: "active")
+                    actionSection("待处理", state: "active")
                     actionSection("需要确认日期", state: "needs_date")
                     if showFinished {
                         actionSection("已完成", state: "done")
@@ -329,15 +350,22 @@ struct ActionsView: View {
                         }
                         ActionTimingView(action: action)
                         HStack {
-                            Button("编辑行动") {
-                                editingMatterID = action.matterID
-                                editingAction = ActionDraft(action)
-                            }
                             if ["active", "needs_date"].contains(action.state) {
-                                Button("完成") { Task { await model.setActionState(action, state: "done") } }
-                                Button("取消行动") { Task { await model.setActionState(action, state: "cancelled") } }
+                                Button("完成", systemImage: "checkmark") { Task { await model.setActionState(action, state: "done") } }
                             }
-                        }.controlSize(.small).buttonStyle(.borderless)
+                            Menu("更多", systemImage: "ellipsis") {
+                                Button("编辑行动…") {
+                                    editingMatterID = action.matterID
+                                    editingAction = ActionDraft(action)
+                                }
+                                if let matterID = action.matterID {
+                                    Button("查看事务与凭证") { Task { await model.showMatter(matterID, actionID: action.id) } }
+                                }
+                                if ["active", "needs_date"].contains(action.state) {
+                                    Button("取消行动") { Task { await model.setActionState(action, state: "cancelled") } }
+                                }
+                            }.menuStyle(.borderlessButton).fixedSize()
+                        }.controlSize(.small)
                     }.padding(.vertical, 5).tag(action.id)
                         .contextMenu {
                             if let matterID = action.matterID {
@@ -378,6 +406,7 @@ struct MatterEditorView: View {
     @State private var textSaveMessage: String?
     @State private var showRecognizedText = true
     @State private var saving = false
+    @State private var showNotes: Bool
 
     init(draft: MatterDraft) {
         var editable = draft
@@ -387,6 +416,7 @@ struct MatterEditorView: View {
         }
         originalActions = draft.actions
         _draft = State(initialValue: editable)
+        _showNotes = State(initialValue: !draft.notes.isEmpty)
         _recognitionFileID = State(initialValue: draft.itemIDs.first)
     }
 
@@ -427,7 +457,7 @@ struct MatterEditorView: View {
                         Text("跟进中").tag("active")
                         Text("已完成").tag("completed")
                     }
-                    LabeledContent("备注") {
+                    DisclosureGroup("备注（可选）", isExpanded: $showNotes) {
                         TextEditor(text: $draft.notes).frame(minHeight: 50, idealHeight: 65).border(.separator)
                             .accessibilityIdentifier("matter-notes")
                     }

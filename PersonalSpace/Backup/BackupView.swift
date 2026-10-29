@@ -6,86 +6,82 @@ struct RestoredLibrary: Identifiable, Sendable {
     let root: URL
     let files: [LibraryFile]
     var title = "备份预览"
+    var temporary = false
 }
 
 struct BackupView: View {
     @EnvironmentObject private var model: LibraryModel
     @State private var presentedLibrary: RestoredLibrary?
+    @State private var switchTarget: LibraryLocation?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            VStack(alignment: .leading, spacing: 6) {
-                Text("备份与恢复").font(.title2.bold())
-                Text("导出、验证备份，或恢复为下次启动使用的资料库。")
-                    .font(.callout).foregroundStyle(.secondary)
-            }.padding(24)
+            Text("备份与恢复").font(.title2.weight(.semibold)).padding(.horizontal, 24).padding(.top, 20)
             Form {
-                Section {
-                    Text("备份包含资料库、已保存的正文索引、对象与事务关联，以及托管副本。")
-                    Text("导出的数据库和文件为明文，可能包含个人资料。请选择自己信任的位置保存。")
-                        .font(.callout).foregroundStyle(.secondary)
-                    Text("来源文件夹中的原件和系统照片图库中的照片不包含在备份中。")
-                        .font(.callout).foregroundStyle(.secondary)
-                    Button("导出备份…", systemImage: "square.and.arrow.up") { model.exportBackup() }
-                        .disabled(model.backupBusy || model.storageUnavailable)
-                        .accessibilityIdentifier("backup-export")
-                } header: {
-                    Text("导出备份")
-                }
-                Section {
-                    Text("选择一份备份，完整校验后恢复到应用内全新独立测试资料库。当前使用的资料库保持不变。")
-                    Text("恢复不会使用原来源的授权书签，不会自动重新安排系统提醒。恢复窗口可直接预览和打开已恢复的托管副本。")
-                        .font(.callout).foregroundStyle(.secondary)
-                    Button("验证并查看备份…", systemImage: "checkmark.shield") { model.restoreBackup() }
-                        .disabled(model.backupBusy)
-                        .accessibilityIdentifier("backup-restore")
-                } header: {
-                    Text("验证并查看备份")
-                }
-                Section("恢复并启用备份") {
-                    Text("校验并确认后，恢复到新的独立目录。下次启动启用恢复资料库，当前资料库保留，可再切回。")
-                        .font(.callout).foregroundStyle(.secondary)
-                    Button("恢复并启用此备份…", systemImage: "arrow.down.doc") { model.chooseBackupToActivate() }
-                        .disabled(model.backupBusy || !model.canSwitchLibraries)
-                        .accessibilityIdentifier("backup-activate")
-                }
                 if let current = model.libraryLocation {
-                    Section("正在使用的资料库") {
-                        Text(current.title)
+                    Section("正在使用") {
+                        Text(current.title).font(.headline).textSelection(.enabled)
+                        if let origin = current.origin {
+                            Text("来自 " + origin.date.formatted(date: .abbreviated, time: .shortened) + " 的备份")
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
                         if let pending = model.pendingLibrary {
                             Label("下次启动：" + pending.title, systemImage: "arrow.right.circle")
-                            Text("当前窗口仍使用原资料库。退出后重新打开即可切换。")
+                            Text("当前窗口继续使用本资料库，退出重开后切换。")
                                 .font(.callout).foregroundStyle(.secondary)
-                            Button("退出以启用") { NSApp.terminate(nil) }.disabled(model.backupBusy)
-                            Button("取消下次启动切换") { model.switchLibraryAfterRestart(to: current) }
-                                .disabled(model.backupBusy)
+                            HStack {
+                                Button("退出以启用") { NSApp.terminate(nil) }.disabled(model.backupBusy)
+                                Button("取消下次启动切换") { model.switchLibraryAfterRestart(to: current) }
+                                    .disabled(model.backupBusy)
+                            }
                         }
                     }
+                }
+                Section {
+                    LabeledContent {
+                        Button("导出备份…", systemImage: "square.and.arrow.up") { model.exportBackup() }
+                            .disabled(model.backupBusy || model.storageUnavailable).accessibilityIdentifier("backup-export")
+                    } label: { Text("保存当前资料库与托管凭证") }
+                    LabeledContent {
+                        Button("验证并查看备份…", systemImage: "checkmark.shield") { model.restoreBackup() }
+                            .disabled(model.backupBusy).accessibilityIdentifier("backup-restore")
+                    } label: { Text("检查备份完整性") }
+                    LabeledContent {
+                        Button("恢复并启用此备份…", systemImage: "arrow.down.doc") { model.chooseBackupToActivate() }
+                            .disabled(model.backupBusy || !model.canSwitchLibraries).accessibilityIdentifier("backup-activate")
+                    } label: { Text("下次启动使用恢复资料库") }
+                } header: { Text("备份操作") } footer: {
+                    Text("包含资料索引、已保存正文、对象、事务、行动与托管凭证；不包含外部原件和照片原图。备份未加密，请妥善保管。")
+                }
+                if let verified = model.verifiedBackup {
+                    Section("已验证的备份") {
+                        Text(verified.url.lastPathComponent).font(.headline).textSelection(.enabled)
+                        Text(verified.summary.manifest.createdAt.formatted(date: .abbreviated, time: .shortened))
+                            .font(.caption).foregroundStyle(.secondary)
+                        Text("\(verified.summary.itemCount) 份资料 · \(verified.summary.matterCount) 个事务 · \(verified.summary.managedCount) 份托管凭证")
+                            .font(.callout)
+                        HStack {
+                            Button("预览托管凭证", systemImage: "eye") { model.previewVerifiedBackup(verified) }
+                                .disabled(model.backupBusy || verified.summary.managedCount == 0)
+                            Button("使用此备份恢复…") { model.backupCandidate = verified }
+                                .disabled(model.backupBusy || !model.canSwitchLibraries)
+                        }
+                        Text("验证不创建永久副本，临时预览在关闭后清理。")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                }
+                if let current = model.libraryLocation {
                     if let old = model.retainedLibrary, old.id != current.id {
                         Section("保留的旧资料库") {
-                            Text(old.title)
+                            Text(old.title).textSelection(.enabled)
                             HStack {
                                 Button("查看保留资料库") { model.previewRetainedLibrary(old) }
-                                Button("下次启动切回此资料库") { model.switchLibraryAfterRestart(to: old) }
+                                Button("下次启动切回此资料库") { switchTarget = old }
                             }.disabled(model.backupBusy)
                         }
                     }
                     if current.id != "original", model.retainedLibrary?.id != "original", let original = model.originalLibrary {
-                        Section("原始资料库仍保留") {
-                            Button("下次启动切回原始资料库") { model.switchLibraryAfterRestart(to: original) }
-                                .disabled(model.backupBusy)
-                        }
-                    }
-                }
-                if let library = model.restoredLibrary {
-                    Section("恢复结果") {
-                        Label(library.title + "已准备好", systemImage: "externaldrive.badge.checkmark")
-                        Text("\(library.files.count) 份资料记录 · \(library.files.filter { $0.managedCopyPath != nil && !$0.isPhoto }.count) 份托管副本")
-                            .font(.callout).foregroundStyle(.secondary)
-                        Text(library.root.path).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
-                        Button("查看恢复资料", systemImage: "doc.on.doc") { presentedLibrary = library }
-                            .disabled(model.backupBusy)
-                            .accessibilityIdentifier("backup-open-restored-library")
+                        Button("下次启动切回原始资料库") { switchTarget = original }.disabled(model.backupBusy)
                     }
                 }
             }.formStyle(.grouped)
@@ -93,20 +89,29 @@ struct BackupView: View {
                 Divider()
                 HStack(alignment: .top, spacing: 10) {
                     if model.backupBusy { ProgressView().controlSize(.small) }
-                    if let message = model.backupMessage {
-                        Text(message).font(.callout).textSelection(.enabled)
-                            .fixedSize(horizontal: false, vertical: true)
-                    } else {
-                        Text("正在处理备份资料…").font(.callout).foregroundStyle(.secondary)
-                    }
+                    Text(model.backupMessage ?? "正在处理备份…").font(.callout).textSelection(.enabled)
+                        .fixedSize(horizontal: false, vertical: true)
                     Spacer(minLength: 0)
-                }.padding(20)
+                }.padding(16)
             }
         }
         .frame(minWidth: 580, idealWidth: 680, minHeight: 440, idealHeight: 560)
-        .sheet(item: $presentedLibrary) { library in RestoredLibraryView(library: library) }
+        .sheet(item: $presentedLibrary, onDismiss: { model.finishBackupPreview() }) { library in
+            RestoredLibraryView(library: library)
+        }
         .sheet(item: $model.backupCandidate) { candidate in BackupActivationSheet(candidate: candidate) }
         .onChange(of: model.restoredLibrary?.id) { presentedLibrary = model.restoredLibrary }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.willTerminateNotification)) { _ in
+            model.finishBackupPreview()
+        }
+        .confirmationDialog("下次启动切换资料库？", isPresented: Binding(get: { switchTarget != nil }, set: {
+            if !$0 { switchTarget = nil }
+        }), presenting: switchTarget) { target in
+            Button("切换到「" + target.title + "」") { model.switchLibraryAfterRestart(to: target) }
+            Button("取消", role: .cancel) { }
+        } message: { target in
+            Text("下次启动使用「" + target.title + "」，当前资料库仍保留。切换不会取消旧资料库的系统提醒，新资料库也不会自动恢复全部通知。提醒状态以当前设备实际待发送请求为准。")
+        }
         .task { model.refreshLibrarySelection() }
     }
 }
@@ -117,27 +122,31 @@ private struct BackupActivationSheet: View {
     let candidate: BackupCandidate
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            Text("恢复并启用备份").font(.title2.bold())
+        VStack(alignment: .leading, spacing: 0) {
+            Text("恢复并启用备份").font(.title2.weight(.semibold)).padding(20)
             Form {
-                LabeledContent("备份", value: candidate.url.lastPathComponent)
-                LabeledContent("备份日期", value: candidate.summary.manifest.createdAt.formatted(date: .abbreviated, time: .shortened))
-                LabeledContent("资料", value: "\(candidate.summary.itemCount) 份")
-                LabeledContent("事务", value: "\(candidate.summary.matterCount) 个")
-                LabeledContent("托管凭证", value: "\(candidate.summary.managedCount) 份")
+                Section("要启用的备份") {
+                    LabeledContent("备份", value: candidate.url.lastPathComponent)
+                    LabeledContent("日期", value: candidate.summary.manifest.createdAt.formatted(date: .abbreviated, time: .shortened))
+                    LabeledContent("资料 / 事务 / 托管凭证", value: "\(candidate.summary.itemCount) / \(candidate.summary.matterCount) / \(candidate.summary.managedCount)")
+                }
+                Section("恢复范围") {
+                    Text("恢复资料索引、正文、对象、事务、事实、行动及 Vault 凭证。下次启动启用，当前资料库不覆盖并可切回。")
+                    Text("外部原件和照片原图不在备份内。文件夹需重新授权，可选新路径；照片需检查当前设备权限与标识。")
+                }
             }.formStyle(.grouped)
-            Text("将恢复资料索引、正文、个人对象、事务、事实、行动及 Vault 托管凭证。当前资料库不会被覆盖，下次启动后启用恢复结果，旧资料库保留并可切回。")
-            Text("外部原件与照片原图不在备份内。文件夹需要重新授权，可选择新路径；照片需检查当前设备授权与标识。系统提醒不会自动安排，需重新确认。")
-                .foregroundStyle(.secondary)
-            Text("备份为未加密的个人资料，请妥善保管。")
-                .font(.callout).foregroundStyle(.secondary)
-            HStack {
-                Button("取消", role: .cancel) { dismiss() }.keyboardShortcut(.cancelAction)
-                Spacer()
-                Button("恢复并在下次启动启用") { model.activateBackup(candidate); dismiss() }
-                    .keyboardShortcut(.defaultAction)
-            }
-        }.padding(24).frame(width: 560, height: 520)
+            Divider()
+            VStack(alignment: .leading, spacing: 12) {
+                Text("切换不取消旧资料库提醒，也不自动恢复新资料库通知；状态以系统实际待发送请求为准。备份未加密，请妥善保管。")
+                    .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                HStack {
+                    Button("取消", role: .cancel) { dismiss() }.keyboardShortcut(.cancelAction)
+                    Spacer()
+                    Button("恢复并在下次启动启用") { model.activateBackup(candidate); dismiss() }
+                        .keyboardShortcut(.defaultAction)
+                }
+            }.padding(20)
+        }.frame(width: 560, height: 540)
     }
 }
 
@@ -173,7 +182,7 @@ struct RestoredLibraryView: View {
             HStack(alignment: .top, spacing: 16) {
                 VStack(alignment: .leading, spacing: 5) {
                     Text(library.title).font(.title2.bold())
-                    Text("从已校验的恢复目录中查看托管副本；当前资料库继续保持原状。")
+                    Text(library.temporary ? "临时预览，关闭后清理。当前资料库与原备份保持不变。" : "查看保留资料库的托管凭证，当前资料库保持不变。")
                         .font(.callout).foregroundStyle(.secondary)
                 }
                 Spacer()
@@ -199,7 +208,7 @@ struct RestoredLibraryView: View {
                 detail.frame(minWidth: 290, idealWidth: 350, maxWidth: .infinity, maxHeight: .infinity)
             }
             Divider()
-            Text("此窗口仅访问恢复目录中的 Vault。原来源书签不使用，系统照片和来源原件需重新授权后另行访问。通知不会自动重新排期。")
+            Text("此窗口仅预览托管凭证，不使用原来源书签，不连接照片，也不安排系统提醒。")
                 .font(.caption).foregroundStyle(.secondary)
                 .frame(maxWidth: .infinity, alignment: .leading).padding(16)
         }
@@ -211,13 +220,14 @@ struct RestoredLibraryView: View {
     private var fileTable: some View {
         Table(filtered, selection: $selectedFileID, sortOrder: $sortOrder) {
             TableColumn("资料", value: \.name) { file in
-                Label(file.name, systemImage: file.isPhoto ? "photo" : "doc").frame(height: 32)
+                Label(file.name, systemImage: file.isPhoto ? "photo" : "doc").frame(height: 28)
             }.width(min: 150, ideal: 240)
             TableColumn("备份内容") { file in
                 Text(file.isPhoto ? "照片关联" : file.managedCopyPath == nil ? "来源索引" : "托管副本")
                     .font(.callout).foregroundStyle(.secondary)
             }.width(min: 75, ideal: 95)
         }
+        .alternatingRowBackgrounds(.disabled)
         .contextMenu(forSelectionType: String.self) { ids in
             if let id = ids.first, let file = library.files.first(where: { $0.id == id }),
                file.managedCopyPath != nil, !file.isPhoto {

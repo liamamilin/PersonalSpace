@@ -133,6 +133,12 @@ M4 使用系统 SQLite FTS5 trigram，只有明确保存的正文进入索引。
 
 默认资料库仍使用原目录；恢复库位于沙盒 `Application Support/PersonalSpace/Libraries/<UUID>`，该目录包含 `library.sqlite` 和 `Vault`，`active-library.json` 保存下次启动的选择。版本 0.10.0 (13)。实际验收与限制见 [M10 证据](evidence/M10/README.md)。
 
+## Product Polish：原生操作打磨
+
+版本 0.10.1 (14)。文件详情把打开、系统预览、关联对象和创建事务放在首屏，文件信息与正文权限可展开查看；`⌥⌘I` 开合详情，窄窗口使用原生详情浮窗。个人对象可直接找到相关事务和下一步，事务优先显示关键日期与待处理行动，已结束行动按需展开。
+
+「验证并查看备份」直接校验原备份，不创建永久恢复库。主动预览托管凭证时使用临时目录，关闭预览或正常退出后清理；「恢复并启用」及保留的旧资料库不受清理影响。恢复库显示备份名称和日期，切换前说明旧库提醒继续保留、新库不会自动安排通知。真实构建、截图与验收限制见 [Product Polish 记录](evidence/Product-Polish/README.md)。
+
 ## 一句话定义
 
 PersonalSpace 让用户从 Mac 上散落的文件和照片中，**找到资料、组织个人对象、关联事务、采取行动**。它是个人数字空间的统一入口，而不是 Finder、Photos 或 Passwords 的克隆。

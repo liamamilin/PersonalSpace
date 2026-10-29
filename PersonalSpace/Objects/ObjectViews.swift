@@ -27,7 +27,7 @@ struct ObjectsView: View {
             Table(filtered, selection: $model.selectedObjectID, sortOrder: $sortOrder) {
                 TableColumn("名称", value: \.name) { object in
                     Label(object.name, systemImage: object.kind == "device" ? "desktopcomputer" : "square.stack.3d.up")
-                        .frame(height: 30)
+                        .frame(height: 26)
                 }.width(min: 150, ideal: 220)
                 TableColumn("类别", value: \.kind) { Text($0.kindTitle).foregroundStyle(.secondary) }
                     .width(min: 60, ideal: 70)
@@ -37,6 +37,7 @@ struct ObjectsView: View {
                     Text(object.updatedAt.formatted(date: .numeric, time: .omitted)).foregroundStyle(.secondary)
                 }.width(min: 80, ideal: 100)
             }
+            .alternatingRowBackgrounds(.disabled)
             .contextMenu(forSelectionType: String.self) { ids in
                 if let id = ids.first, let object = model.objects.first(where: { $0.id == id }) {
                     Button("查看关联资料") { model.showObject(id) }
@@ -61,11 +62,13 @@ struct ObjectInfoView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 20) {
                     Label(object.name, systemImage: object.kind == "device" ? "desktopcomputer" : "square.stack.3d.up")
-                        .font(.title2.bold()).textSelection(.enabled)
+                        .font(.title3.weight(.semibold)).textSelection(.enabled)
                     Text("\(object.kindTitle) · \(object.itemCount) 份关联资料").foregroundStyle(.secondary)
                     Button("查看关联资料", systemImage: "doc.on.doc") { model.showObject(object.id) }
                         .buttonStyle(.borderedProminent)
                     Button("编辑名称和备注", systemImage: "pencil") { model.editObject(object) }
+                    Divider()
+                    ObjectMattersView(objectID: object.id)
                     Divider()
                     Text("备注").font(.headline)
                     Text(object.notes.isEmpty ? "尚未填写备注" : object.notes)
@@ -80,6 +83,53 @@ struct ObjectInfoView: View {
         } else {
             ContentUnavailableView("选择一个个人对象", systemImage: "desktopcomputer",
                 description: Text("查看备注和关联资料，或创建一个新对象。"))
+        }
+    }
+}
+
+/// Existing object relationships, shown next to the object's files and in its inspector.
+struct ObjectMattersView: View {
+    @EnvironmentObject private var model: LibraryModel
+    let objectID: String
+    var compact = false
+    private var related: [MatterRecord] { model.matters.filter { $0.objectID == objectID } }
+    private var nextAction: ActionRecord? {
+        model.actions.first { action in
+            ["active", "needs_date"].contains(action.state) && related.contains { $0.id == action.matterID }
+        }
+    }
+    var body: some View {
+        if compact {
+            HStack(spacing: 12) {
+                Menu("相关事务（\(related.count)）", systemImage: "doc.text") {
+                    ForEach(related) { matter in
+                        Button(matter.title) { Task { await model.showMatter(matter.id) } }
+                    }
+                }.disabled(related.isEmpty).fixedSize()
+                if let nextAction {
+                    Text("下一步：" + nextAction.title).font(.caption).foregroundStyle(.secondary)
+                        .lineLimit(1).help(nextAction.title)
+                }
+                Spacer(minLength: 0)
+            }.controlSize(.small)
+        } else {
+            VStack(alignment: .leading, spacing: 12) {
+                Text("相关事务").font(.headline)
+                if related.isEmpty {
+                    Text("尚无关联事务。可从对象的凭证创建订单、合同、保修或订阅。")
+                        .font(.callout).foregroundStyle(.secondary)
+                }
+                ForEach(related) { matter in
+                    VStack(alignment: .leading, spacing: 4) {
+                        Button { Task { await model.showMatter(matter.id) } } label: {
+                            Label(matter.title, systemImage: (MatterKind(rawValue: matter.kind) ?? .order).image)
+                        }.buttonStyle(.link)
+                        let action = model.actions.first { $0.matterID == matter.id && ["active", "needs_date"].contains($0.state) }
+                        Text(action.map { "下一步：" + $0.title } ?? (matter.status == "completed" ? "事务已完成" : "暂无待处理行动"))
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                }
+            }
         }
     }
 }

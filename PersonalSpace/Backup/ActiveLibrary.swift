@@ -1,11 +1,24 @@
 import Foundation
 
+struct RestoredLibraryOrigin: Codable, Sendable {
+    let name: String
+    let date: Date
+}
+
 struct LibraryLocation: Identifiable, Sendable, Equatable {
     let id: String
     let root: URL
     var databaseURL: URL { root.appendingPathComponent(id == "original" ? "Library.sqlite" : "library.sqlite") }
     var vault: URL { root.appendingPathComponent("Vault", isDirectory: true) }
-    var title: String { id == "original" ? "原始资料库" : "恢复的资料库 · " + String(id.prefix(8)) }
+    var origin: RestoredLibraryOrigin? {
+        guard id != "original", let data = try? Data(contentsOf: root.appendingPathComponent("origin.json")) else { return nil }
+        return try? JSONDecoder().decode(RestoredLibraryOrigin.self, from: data)
+    }
+    var title: String {
+        if id == "original" { return "原始资料库" }
+        if let origin { return "恢复 · " + origin.name.replacingOccurrences(of: ".personalspacebackup", with: "") }
+        return "恢复的资料库 · " + String(id.prefix(8))
+    }
 }
 
 /// A next-launch pointer and one retained predecessor; databases are never hot-swapped.
