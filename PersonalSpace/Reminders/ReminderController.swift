@@ -12,18 +12,23 @@ struct ReminderResult: Sendable {
 @MainActor
 final class ReminderController: NSObject, ObservableObject, UNUserNotificationCenterDelegate {
     var onOpenAction: (@MainActor (String) -> Void)?
+    var onOtherLibraryReminder: (@MainActor () -> Void)?
+    let libraryID: String
 
     private let center: UNUserNotificationCenter
     private let logger = Logger(subsystem: "com.liamamilin.PersonalSpace", category: "Reminders")
 
-    override init() {
+    override convenience init() { self.init(libraryID: "original") }
+
+    init(libraryID: String) {
+        self.libraryID = libraryID
         center = .current()
         super.init()
         center.delegate = self
     }
 
-    nonisolated static func identifier(for actionID: String) -> String {
-        "action.\(actionID)"
+    nonisolated static func identifier(for actionID: String, libraryID: String = "original") -> String {
+        libraryID == "original" ? "action.\(actionID)" : "library.\(libraryID).action.\(actionID)"
     }
 
     func apply(
@@ -33,7 +38,7 @@ final class ReminderController: NSObject, ObservableObject, UNUserNotificationCe
         dateConfirmed: Bool,
         state: String
     ) async -> ReminderResult {
-        let identifier = Self.identifier(for: actionID)
+        let identifier = Self.identifier(for: actionID, libraryID: libraryID)
         // Replacement, completion, cancellation, and unconfirmed dates all remove the old request first.
         center.removePendingNotificationRequests(withIdentifiers: [identifier])
         center.removeDeliveredNotifications(withIdentifiers: [identifier])
@@ -78,6 +83,7 @@ final class ReminderController: NSObject, ObservableObject, UNUserNotificationCe
         content.body = "你有一项待办行动需要处理。打开 PersonalSpace 查看详情。"
         content.sound = .default
         content.userInfo = ["actionID": actionID]
+        content.userInfo["libraryID"] = libraryID
 
         let calendar = Calendar.current
         var components = calendar.dateComponents([.year, .month, .day, .hour, .minute, .second], from: remindAt)
@@ -106,7 +112,7 @@ final class ReminderController: NSObject, ObservableObject, UNUserNotificationCe
         var pending: [String: Date] = [:]
         for request in requests {
             guard let actionID = request.content.userInfo["actionID"] as? String,
-                  request.identifier == Self.identifier(for: actionID),
+                  request.identifier == Self.identifier(for: actionID, libraryID: libraryID),
                   let trigger = request.trigger as? UNCalendarNotificationTrigger,
                   let date = trigger.nextTriggerDate() else { continue }
             pending[actionID] = date
@@ -123,7 +129,7 @@ final class ReminderController: NSObject, ObservableObject, UNUserNotificationCe
         return Set(notifications.compactMap { notification in
             let request = notification.request
             guard let actionID = request.content.userInfo["actionID"] as? String,
-                  request.identifier == Self.identifier(for: actionID) else { return nil }
+                  request.identifier == Self.identifier(for: actionID, libraryID: libraryID) else { return nil }
             return actionID
         })
     }
@@ -151,7 +157,11 @@ final class ReminderController: NSObject, ObservableObject, UNUserNotificationCe
     ) async {
         guard response.actionIdentifier == UNNotificationDefaultActionIdentifier,
               let actionID = response.notification.request.content.userInfo["actionID"] as? String else { return }
-        await MainActor.run { onOpenAction?(actionID) }
+        let origin = response.notification.request.content.userInfo["libraryID"] as? String ?? "original"
+        await MainActor.run {
+            if origin == libraryID { onOpenAction?(actionID) }
+            else { onOtherLibraryReminder?() }
+        }
     }
 
     nonisolated func userNotificationCenter(

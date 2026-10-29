@@ -34,6 +34,12 @@ struct SourcesView: View {
                             } else { Text("\(source.fileCount) 个文件").foregroundStyle(.secondary) }
                         }
                         Text(source.path).font(.callout).foregroundStyle(.secondary).textSelection(.enabled)
+                        if source.needsAuthorization {
+                            Label("需要重新授权", systemImage: "lock.trianglebadge.exclamationmark")
+                                .font(.callout).foregroundStyle(.orange)
+                            Text("选择对应文件夹即可恢复访问，新电脑上的路径可以不同；已有资料关联保留。")
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
                         if let error = source.lastError {
                             Label(error, systemImage: "exclamationmark.triangle").font(.callout).foregroundStyle(.orange)
                         } else {
@@ -49,7 +55,7 @@ struct SourcesView: View {
                             if model.scanning[source.id] != nil {
                                 Button("停止扫描") { model.cancelScan(source) }
                             } else {
-                                Button("刷新") { model.refresh(source) }
+                                Button("刷新") { model.refresh(source) }.disabled(source.needsAuthorization)
                             }
                             Button("重新授权") { model.addFolders(replacing: source) }
                                 .disabled(model.scanning[source.id] != nil)

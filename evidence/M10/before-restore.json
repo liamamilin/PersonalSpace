@@ -1,0 +1,57 @@
+{
+  "libraryID": "B3DB1131-7B53-4556-B80D-CAD9B00EE771",
+  "items": [
+    {
+      "id": "C39FC464-4BED-4FFC-8D36-0D288806EABE",
+      "sourceID": "inbox",
+      "relativePath": "88480C3B-A161-4EC0-B5B7-3054076BB226/M10-订单.pdf",
+      "managedCopyPath": "88480C3B-A161-4EC0-B5B7-3054076BB226/M10-订单.pdf"
+    },
+    {
+      "id": "CC2F1873-6855-44E6-BCCF-3712D04371DF",
+      "sourceID": "9A791774-BD92-416B-B2D1-2D21C5E541F2",
+      "relativePath": "M10-外部凭证.txt",
+      "managedCopyPath": null
+    }
+  ],
+  "actions": [
+    {
+      "id": "DCEDDFF6-F8DE-49B6-9A26-756C2A8D18B5",
+      "matterID": "969135A2-0442-4F42-AA14-C28F76974DF1",
+      "title": "M10 检查保修 A",
+      "remindAt": "2026-10-29 04:46:57.658",
+      "state": "active",
+      "dateConfirmed": 1
+    },
+    {
+      "id": "D61DFD48-CE53-46ED-8198-AA5E65758479",
+      "matterID": "969135A2-0442-4F42-AA14-C28F76974DF1",
+      "title": "M10 检查保修 B",
+      "remindAt": "2026-10-29 04:47:10.750",
+      "state": "active",
+      "dateConfirmed": 1
+    }
+  ],
+  "objects": [
+    {
+      "id": "28E63159-FD2B-4E61-A0FB-00A04D83B7AB",
+      "name": "我的电脑"
+    }
+  ],
+  "facts": [
+    {
+      "id": "EDF9CC1C-A473-4821-B7E2-E37D829E2EA1",
+      "matterID": "969135A2-0442-4F42-AA14-C28F76974DF1",
+      "key": "product",
+      "valueText": "合成 MacBook Pro",
+      "state": "confirmed"
+    },
+    {
+      "id": "9AA9DDA6-BD6F-47EF-AA9D-E4A27E4859D3",
+      "matterID": "969135A2-0442-4F42-AA14-C28F76974DF1",
+      "key": "warranty_end_date",
+      "valueText": "2030-12-31",
+      "state": "confirmed"
+    }
+  ]
+}

@@ -155,15 +155,35 @@ final class LibraryDatabase: Sendable {
                 DELETE FROM document_text WHERE itemID IN (SELECT id FROM item WHERE textNeedsRefresh=1);
                 """)
         }
+        migrator.registerMigration("M10-restored-source-authorization") { db in
+            try db.execute(sql: "ALTER TABLE source ADD COLUMN needsAuthorization BOOLEAN NOT NULL DEFAULT 0")
+        }
         try migrator.migrate(queue)
     }
 
     static func applicationDatabase() throws -> LibraryDatabase {
-        let directory = try FileManager.default.url(for: .applicationSupportDirectory,
-            in: .userDomainMask, appropriateFor: nil, create: true)
-            .appendingPathComponent("PersonalSpace", isDirectory: true)
-        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        return try LibraryDatabase(path: directory.appendingPathComponent("Library.sqlite").path)
+        try LibraryDatabase(path: ActiveLibrary.application().current().databaseURL.path)
+    }
+
+    func prepareRestoredLibrary() async throws {
+        try await queue.write { db in
+            try db.execute(sql: """
+                UPDATE source SET bookmark=X'', needsAuthorization=1, lastError='需要重新授权；可选择新电脑上的对应文件夹。' WHERE kind='folder';
+                UPDATE item SET isAvailable=0 WHERE sourceID IN (SELECT id FROM source WHERE kind IN ('folder','photos'));
+                UPDATE source SET isEnabled=0, lastError='请重新连接照片图库；旧设备的照片标识可能不可用。' WHERE kind='photos';
+                """)
+        }
+    }
+
+    func reauthorizeSource(id: String, name: String, path: String, bookmark: Data) async throws {
+        try await queue.write { db in
+            guard let source = try Row.fetchOne(db, sql: "SELECT path, needsAuthorization FROM source WHERE id=? AND kind='folder'", arguments: [id]),
+                  (source["needsAuthorization"] as Bool) || (source["path"] as String) == path else {
+                throw LibraryDataError.invalidFolderSource
+            }
+            try db.execute(sql: "UPDATE source SET name=?, path=?, bookmark=?, needsAuthorization=0, lastError=NULL, isEnabled=1 WHERE id=?",
+                arguments: [name, path, bookmark, id])
+        }
     }
 
     func sources() async throws -> [FolderSource] {

@@ -17,13 +17,18 @@ final class LibraryModel: ObservableObject {
     @Published var reminderMessage: String?
     @Published var showMatterEditor = false
     @Published var matterDraft = MatterDraft()
-    let reminders = ReminderController()
+    let reminders: ReminderController
     let photoLibrary = PhotoLibraryController()
     @Published var photoPreviewImage: NSImage?
     @Published var showPhotoPreview = false
     @Published var backupBusy = false
     @Published var backupMessage: String?
     @Published var restoredLibrary: RestoredLibrary?
+    @Published var backupCandidate: BackupCandidate?
+    @Published private(set) var pendingLibrary: LibraryLocation?
+    @Published private(set) var retainedLibrary: LibraryLocation?
+    private(set) var libraryLocation: LibraryLocation?
+    private var librarySelection: ActiveLibrary?
     var openLibraryWindow: (() -> Void)?
     @Published var objects: [PersonalObject] = []
     @Published var selectedObjectID: String?
@@ -101,22 +106,41 @@ final class LibraryModel: ObservableObject {
     var isScanning: Bool { !scanning.isEmpty }
 
     init(database suppliedDatabase: LibraryDatabase? = nil) {
+        var opened: LibraryDatabase?
+        var location: LibraryLocation?
+        var selection: ActiveLibrary?
+        var openingError: String?
         do {
-            if let suppliedDatabase { database = suppliedDatabase }
-            else { database = try LibraryDatabase.applicationDatabase() }
+            if let suppliedDatabase { opened = suppliedDatabase }
+            else {
+                let active = try ActiveLibrary.application()
+                selection = active
+                let chosen = try active.current()
+                location = chosen
+                opened = try LibraryDatabase(path: chosen.databaseURL.path)
+            }
         }
-        catch {
-            database = nil
-            storageUnavailable = true
-            errorMessage = "无法打开本地资料库。请检查磁盘空间和应用数据目录的访问权限后重新启动。"
-        }
-        do { managedStore = try ManagedFileStore.applicationStore() }
-        catch { errorMessage = "托管目录无法访问，文件搜索仍可使用。" }
+        catch { openingError = "无法打开活动资料库。已有资料库保留，请检查磁盘和资料库位置。" }
+        database = opened
+        libraryLocation = location
+        librarySelection = selection
+        reminders = ReminderController(libraryID: location?.id ?? "original")
+        if let location { managedStore = ManagedFileStore(root: location.vault) }
+        else if suppliedDatabase != nil { managedStore = try? ManagedFileStore.applicationStore() }
+        storageUnavailable = opened == nil
+        errorMessage = openingError
+        refreshLibrarySelection()
         reminders.onOpenAction = { [weak self] id in
             guard let self else { return }
             self.openLibraryWindow?()
             NSApp.activate(ignoringOtherApps: true)
             Task { await self.openAction(id) }
+        }
+        reminders.onOtherLibraryReminder = { [weak self] in
+            guard let self else { return }
+            self.openLibraryWindow?()
+            NSApp.activate(ignoringOtherApps: true)
+            self.errorMessage = "此提醒来自另一份保留的资料库，请在「设置 → 备份」中切回对应资料库查看。"
         }
     }
 
@@ -131,6 +155,10 @@ final class LibraryModel: ObservableObject {
         guard let database else { return }
         do {
             for source in try await database.sources() {
+                guard !source.needsAuthorization else {
+                    monitoringErrors[source.id] = "需要重新授权后才能自动更新。"
+                    continue
+                }
                 await startMonitoring(source)
                 refresh(source)
             }
@@ -217,6 +245,7 @@ final class LibraryModel: ObservableObject {
             if let id = selectedFileID, !files.contains(where: { $0.id == id }) {
                 selectedFileID = nil
             }
+            if selectedMatterID != nil { await loadMatterDetails() }
         } catch {
             // A SwiftUI search/navigation task may be superseded during an async GRDB read.
             guard generation == queryGeneration, !Task.isCancelled else { return }
@@ -228,7 +257,8 @@ final class LibraryModel: ObservableObject {
         guard database != nil else { return }
         let panel = NSOpenPanel()
         panel.title = source == nil ? "添加资料来源" : "重新授权来源"
-        panel.message = source == nil ? "文件保留在原位置，PersonalSpace 仅建立本地索引。" : "请重新选择原来的文件夹，恢复访问权限。"
+        panel.message = source == nil ? "文件保留在原位置，PersonalSpace 仅建立本地索引。" :
+            (source?.needsAuthorization == true ? "请选择与此来源对应的文件夹；新电脑上的路径可以不同，将保留原资料关联。" : "请重新选择原来的文件夹，恢复访问权限。")
         panel.prompt = source == nil ? "添加文件夹" : "重新授权"
         panel.canChooseFiles = false
         panel.canChooseDirectories = true
@@ -329,7 +359,8 @@ final class LibraryModel: ObservableObject {
             let values = try url.resourceValues(forKeys: [.isPackageKey, .isSymbolicLinkKey])
             guard values.isPackage != true, values.isSymbolicLink != true else { throw AccessError.authorization }
             let canonicalPath = url.resolvingSymlinksInPath().standardizedFileURL.path
-            if let source, canonicalPath != URL(fileURLWithPath: source.path).resolvingSymlinksInPath().path {
+            if let source, !source.needsAuthorization,
+               canonicalPath != URL(fileURLWithPath: source.path).resolvingSymlinksInPath().path {
                 errorMessage = "请重新选择原来源文件夹。添加其它位置请使用「添加文件夹」。"
                 return
             }
@@ -339,7 +370,11 @@ final class LibraryModel: ObservableObject {
             let id = existing?.id ?? UUID().uuidString
             guard scanning[id] == nil else { return }
             let bookmark = try FolderAccess.bookmark(for: url)
-            try await database.saveSource(id: id, name: url.lastPathComponent, path: canonicalPath, bookmark: bookmark)
+            if source != nil {
+                try await database.reauthorizeSource(id: id, name: url.lastPathComponent, path: canonicalPath, bookmark: bookmark)
+            } else {
+                try await database.saveSource(id: id, name: url.lastPathComponent, path: canonicalPath, bookmark: bookmark)
+            }
             await reload()
             if let saved = try await database.findSource(path: canonicalPath) {
                 stopMonitoring(id)
@@ -391,6 +426,10 @@ final class LibraryModel: ObservableObject {
 
     func refresh(_ source: FolderSource) {
         guard let database else { return }
+        guard !source.needsAuthorization else {
+            monitoringErrors[source.id] = "需要重新授权后才能刷新。"
+            return
+        }
         guard scanTasks[source.id] == nil else {
             refreshAfterScan.insert(source.id)
             return
@@ -1007,11 +1046,111 @@ final class LibraryModel: ObservableObject {
         }
     }
 
+    var canSwitchLibraries: Bool { librarySelection != nil && libraryLocation != nil }
+    var originalLibrary: LibraryLocation? { try? librarySelection?.location("original") }
+
+    func refreshLibrarySelection() {
+        guard let librarySelection, let libraryLocation else { return }
+        do {
+            let choice = try librarySelection.selection()
+            pendingLibrary = choice.active == libraryLocation.id ? nil : try librarySelection.location(choice.active)
+            retainedLibrary = try choice.previous.map { try librarySelection.location($0) }
+        } catch { backupMessage = "无法读取资料库切换记录：" + error.localizedDescription }
+    }
+
+    func chooseBackupToActivate() {
+        guard !backupBusy, canSwitchLibraries else { return }
+        let panel = NSOpenPanel()
+        panel.title = "恢复并启用 PersonalSpace 备份"
+        panel.message = "先校验并核对备份内容，再恢复为下次启动使用的资料库。当前资料库不会被覆盖。"
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = false
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        backupBusy = true
+        backupMessage = "正在校验备份内容…"
+        Task {
+            let scoped = url.startAccessingSecurityScopedResource()
+            defer { if scoped { url.stopAccessingSecurityScopedResource() }; backupBusy = false }
+            do {
+                let bookmark = try FolderAccess.bookmark(for: url)
+                let summary = try await LibraryBackup.inspect(at: url)
+                backupCandidate = BackupCandidate(url: url, bookmark: bookmark, summary: summary)
+                backupMessage = "备份校验通过，请核对后确认恢复。"
+            } catch { backupMessage = "备份校验失败，未切换资料库：" + error.localizedDescription }
+        }
+    }
+
+    func activateBackup(_ candidate: BackupCandidate) {
+        guard !backupBusy, let librarySelection, let libraryLocation else { return }
+        backupCandidate = nil
+        backupBusy = true
+        backupMessage = "正在恢复到新目录并验证资料库与托管凭证…"
+        Task {
+            defer { backupBusy = false }
+            var ownedDirectory: URL?
+            do {
+                let source = FolderSource(id: "backup", name: "备份", path: candidate.url.path,
+                    bookmark: candidate.bookmark, lastScannedAt: nil, lastError: nil, fileCount: 0)
+                let access = try FolderAccess.resolve(source)
+                defer { access.url.stopAccessingSecurityScopedResource() }
+                let destination = try librarySelection.newRestoreLocation()
+                let copied = try await LibraryBackup.restore(from: access.url, to: destination.root)
+                ownedDirectory = destination.root
+                guard copied == candidate.summary.manifest else { throw ActiveLibraryError.backupChanged }
+                let restored = try LibraryDatabase(path: destination.databaseURL.path)
+                do {
+                    try await restored.prepareRestoredLibrary()
+                    try restored.queue.close()
+                } catch { try? restored.queue.close(); throw error }
+                try await Task.detached(priority: .utility) {
+                    try librarySelection.scheduleSwitch(to: destination, from: libraryLocation)
+                }.value
+                ownedDirectory = nil // The atomic pointer now owns this fully validated directory.
+                refreshLibrarySelection()
+                backupMessage = "恢复与验证完成。下次启动将启用此备份；当前资料库与原件保持不变。外部来源需重新授权，提醒需重新确认。"
+            } catch {
+                if let ownedDirectory { try? FileManager.default.removeItem(at: ownedDirectory) }
+                backupMessage = "恢复未启用，当前资料库保持原状：" + error.localizedDescription
+            }
+        }
+    }
+
+    func switchLibraryAfterRestart(to target: LibraryLocation) {
+        guard !backupBusy, let librarySelection, let libraryLocation else { return }
+        backupBusy = true
+        backupMessage = "正在验证要切回的资料库…"
+        Task {
+            defer { backupBusy = false }
+            do {
+                try await Task.detached(priority: .utility) {
+                    try librarySelection.scheduleSwitch(to: target, from: libraryLocation)
+                }.value
+                refreshLibrarySelection()
+                backupMessage = pendingLibrary == nil ? "已取消下次启动切换，继续使用当前资料库。" : "已验证并记录切换。请退出并重新打开应用；当前与保留资料库均未覆盖。"
+            } catch { backupMessage = "未切换资料库：" + error.localizedDescription }
+        }
+    }
+
+    func previewRetainedLibrary(_ location: LibraryLocation) {
+        guard !backupBusy else { return }
+        backupBusy = true
+        Task {
+            defer { backupBusy = false }
+            do {
+                let saved = try LibraryDatabase(path: location.databaseURL.path)
+                defer { try? saved.queue.close() }
+                let copies = try await saved.files(FileQuery(managedOnly: true, limit: Int.max)).files
+                restoredLibrary = RestoredLibrary(root: location.root, files: copies, title: location.title)
+            } catch { backupMessage = "无法查看保留资料库：" + error.localizedDescription }
+        }
+    }
+
     func restoreBackup() {
         guard !backupBusy else { return }
         let panel = NSOpenPanel()
         panel.title = "选择 PersonalSpace 备份"
-        panel.message = "先完整校验，再恢复到应用内的全新独立测试库。当前资料库不会被替换。"
+        panel.message = "完整校验后查看备份中的托管凭证。当前资料库不会被替换。"
         panel.canChooseFiles = false
         panel.canChooseDirectories = true
         panel.allowsMultipleSelection = false

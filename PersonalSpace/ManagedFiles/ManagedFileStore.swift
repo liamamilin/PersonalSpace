@@ -15,10 +15,7 @@ struct ManagedFileStore: Sendable {
     }
 
     static func applicationStore() throws -> ManagedFileStore {
-        let support = try FileManager.default.url(for: .applicationSupportDirectory,
-            in: .userDomainMask, appropriateFor: nil, create: true)
-        return ManagedFileStore(root: support.appendingPathComponent("PersonalSpace", isDirectory: true)
-            .appendingPathComponent("Vault", isDirectory: true))
+        try ManagedFileStore(root: ActiveLibrary.application().current().vault)
     }
 
     // The caller holds the source folder's security-scoped access for this operation.

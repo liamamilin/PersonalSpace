@@ -14,7 +14,51 @@ struct BackupManifest: Codable, Sendable, Equatable {
     let files: [BackupFileEntry]
 }
 
+struct BackupSummary: Sendable {
+    let manifest: BackupManifest
+    let itemCount: Int
+    let matterCount: Int
+    let managedCount: Int
+}
+
+struct BackupCandidate: Identifiable, Sendable {
+    let id = UUID()
+    let url: URL
+    let bookmark: Data
+    let summary: BackupSummary
+}
+
 struct LibraryBackup: Sendable {
+    static func inspect(at directory: URL) async throws -> BackupSummary {
+        try await Task.detached(priority: .utility) {
+            let manifest = try verifyFiles(at: directory)
+            var configuration = Configuration()
+            configuration.readonly = true
+            let snapshot = try DatabaseQueue(path: directory.appendingPathComponent("library.sqlite").path, configuration: configuration)
+            defer { try? snapshot.close() }
+            return try snapshot.read { db in
+                BackupSummary(manifest: manifest,
+                    itemCount: try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM item") ?? 0,
+                    matterCount: try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM matter") ?? 0,
+                    managedCount: try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM item WHERE managedCopyPath IS NOT NULL") ?? 0)
+            }
+        }.value
+    }
+
+    static func validateForUse(database: LibraryDatabase, vaultRoot: URL) throws {
+        try database.queue.read { db in
+            guard try String.fetchOne(db, sql: "PRAGMA quick_check") == "ok",
+                  try Row.fetchAll(db, sql: "PRAGMA foreign_key_check").isEmpty else { throw BackupError.invalidDatabase }
+            for table in ["item", "personal_object", "matter", "fact", "action"] {
+                _ = try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM \(table)")
+            }
+        }
+        let store = ManagedFileStore(root: vaultRoot)
+        for (path, hash) in try managedReferences(in: database.queue) {
+            try validateDirectory(vaultRoot)
+            guard try entry(for: store.url(for: path), path: path).sha256 == hash else { throw BackupError.changedFile }
+        }
+    }
     static func export(database: LibraryDatabase, vaultRoot: URL, to destination: URL) async throws -> BackupManifest {
         let work = Task.detached(priority: .utility) {
             try exportFiles(database: database, vaultRoot: vaultRoot, to: destination)

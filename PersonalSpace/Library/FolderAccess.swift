@@ -7,6 +7,7 @@ struct FolderAccess {
     }
 
     static func resolve(_ source: FolderSource) throws -> (url: URL, renewedBookmark: Data?) {
+        guard !source.needsAuthorization else { throw AccessError.authorization }
         var stale = false
         let url = try URL(resolvingBookmarkData: source.bookmark,
                           options: [.withSecurityScope, .withoutUI], relativeTo: nil,

@@ -1,0 +1,55 @@
+{
+  "manifestFiles": 3,
+  "items": [
+    {
+      "id": "C39FC464-4BED-4FFC-8D36-0D288806EABE",
+      "name": "M10-订单.pdf",
+      "kind": "imported",
+      "managedCopyPath": "88480C3B-A161-4EC0-B5B7-3054076BB226/M10-订单.pdf"
+    },
+    {
+      "id": "CC2F1873-6855-44E6-BCCF-3712D04371DF",
+      "name": "M10-外部凭证.txt",
+      "kind": "file",
+      "managedCopyPath": null
+    },
+    {
+      "id": "3438A856-61D7-4146-BF51-768EB585B8BB",
+      "name": "M10-恢复后收纳.txt",
+      "kind": "imported",
+      "managedCopyPath": "9D34D786-F231-49E0-B7A2-47AF1F68C25B/M10-恢复后收纳.txt"
+    }
+  ],
+  "actions": [
+    {
+      "id": "DCEDDFF6-F8DE-49B6-9A26-756C2A8D18B5",
+      "title": "M10 检查保修 A",
+      "state": "done",
+      "remindAt": "2026-10-29 04:46:57.658"
+    },
+    {
+      "id": "D61DFD48-CE53-46ED-8198-AA5E65758479",
+      "title": "M10 检查保修 B · 恢复后编辑",
+      "state": "active",
+      "remindAt": "2026-10-29 04:47:10.750"
+    },
+    {
+      "id": "03159E55-5096-4429-8F10-37FA8D69E183",
+      "title": "M10 恢复后新增行动",
+      "state": "needs_date",
+      "remindAt": null
+    }
+  ],
+  "facts": [
+    {
+      "key": "product",
+      "valueText": "合成 MacBook Pro · 恢复后校对",
+      "state": "confirmed"
+    },
+    {
+      "key": "warranty_end_date",
+      "valueText": "2030-12-31",
+      "state": "confirmed"
+    }
+  ]
+}

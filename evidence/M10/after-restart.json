@@ -1,0 +1,46 @@
+{
+  "activeLibrary": "13C58FFD-8F8C-47B4-8EF5-4793540025AC",
+  "retainedLibrary": "B3DB1131-7B53-4556-B80D-CAD9B00EE771",
+  "sentinelExcluded": true,
+  "actionIDsDatesUnchanged": true,
+  "managedBytesMatchOriginal": true,
+  "source": {
+    "id": "9A791774-BD92-416B-B2D1-2D21C5E541F2",
+    "needsAuthorization": 1,
+    "bookmarkBytes": 0
+  },
+  "items": [
+    {
+      "id": "C39FC464-4BED-4FFC-8D36-0D288806EABE",
+      "sourceID": "inbox",
+      "relativePath": "88480C3B-A161-4EC0-B5B7-3054076BB226/M10-订单.pdf",
+      "managedCopyPath": "88480C3B-A161-4EC0-B5B7-3054076BB226/M10-订单.pdf",
+      "isAvailable": 0
+    },
+    {
+      "id": "CC2F1873-6855-44E6-BCCF-3712D04371DF",
+      "sourceID": "9A791774-BD92-416B-B2D1-2D21C5E541F2",
+      "relativePath": "M10-外部凭证.txt",
+      "managedCopyPath": null,
+      "isAvailable": 0
+    }
+  ],
+  "actions": [
+    {
+      "id": "DCEDDFF6-F8DE-49B6-9A26-756C2A8D18B5",
+      "matterID": "969135A2-0442-4F42-AA14-C28F76974DF1",
+      "title": "M10 检查保修 A",
+      "remindAt": "2026-10-29 04:46:57.658",
+      "state": "active",
+      "dateConfirmed": 1
+    },
+    {
+      "id": "D61DFD48-CE53-46ED-8198-AA5E65758479",
+      "matterID": "969135A2-0442-4F42-AA14-C28F76974DF1",
+      "title": "M10 检查保修 B",
+      "remindAt": "2026-10-29 04:47:10.750",
+      "state": "active",
+      "dateConfirmed": 1
+    }
+  ]
+}

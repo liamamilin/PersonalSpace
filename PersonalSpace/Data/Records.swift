@@ -10,6 +10,7 @@ struct FolderSource: Decodable, FetchableRecord, Identifiable, Sendable {
     var lastScannedAt: Date?
     var lastError: String?
     var fileCount: Int
+    var needsAuthorization = false
 }
 
 struct PersonalObject: Decodable, FetchableRecord, Identifiable, Sendable, Equatable {
