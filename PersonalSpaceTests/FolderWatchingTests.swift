@@ -27,7 +27,8 @@ final class FolderWatchingTests: XCTestCase {
             if files.filter(\.isAvailable).count == count, model.scanning[sourceID] == nil { return }
             try await Task.sleep(for: .milliseconds(100))
         }
-        XCTFail("Real FSEvents did not update source \(sourceID) to \(count) files; watching=\(model.monitoredSourceIDs), loaded=\(model.sources.map(\.id)), scanning=\(model.scanning), errors=\(model.monitoringErrors)")
+        let actual = try await database.files(FileQuery(sourceID: sourceID)).files.filter(\.isAvailable).count
+        XCTFail("Real FSEvents timed out after 12s for source \(sourceID): expected \(count) available files, found \(actual); watching=\(model.monitoredSourceIDs), loaded=\(model.sources.map(\.id)), scanning=\(model.scanning), errors=\(model.monitoringErrors)")
     }
 
     func testRealEventsRefreshMetadataAndPreserveUnavailableEvidenceAndManagedCopy() async throws {
@@ -128,6 +129,8 @@ final class FolderWatchingTests: XCTestCase {
         await model.start()
         XCTAssertNotNil(model.monitoringErrors["bad"])
         XCTAssertEqual(model.monitoredSourceIDs, ["good"])
+        // Wait for the startup scan to finish so only a real event can find new.txt.
+        try await waitForFiles(0, sourceID: "good", database: database, model: model)
         try Data("real event".utf8).write(to: good.appendingPathComponent("new.txt"))
         try await waitForFiles(1, sourceID: "good", database: database, model: model)
         let history = try await database.files(FileQuery(sourceID: "bad"))
