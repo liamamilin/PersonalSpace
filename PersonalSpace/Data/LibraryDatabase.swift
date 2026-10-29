@@ -147,6 +147,14 @@ final class LibraryDatabase: Sendable {
         migrator.registerMigration("M7-quick-imports") { db in
             try db.execute(sql: "ALTER TABLE item ADD COLUMN importedFromPath TEXT")
         }
+        migrator.registerMigration("M9.1-text-freshness") { db in
+            try db.execute(sql: """
+                ALTER TABLE item ADD COLUMN textNeedsRefresh BOOLEAN NOT NULL DEFAULT 0;
+                UPDATE item SET textNeedsRefresh=1 WHERE kind='file' AND EXISTS (
+                    SELECT 1 FROM document_text dt WHERE dt.itemID=item.id AND item.modifiedAt>dt.indexedAt);
+                DELETE FROM document_text WHERE itemID IN (SELECT id FROM item WHERE textNeedsRefresh=1);
+                """)
+        }
         try migrator.migrate(queue)
     }
 
@@ -212,6 +220,17 @@ final class LibraryDatabase: Sendable {
                 throw LibraryDataError.invalidFolderSource
             }
             for file in files {
+                // Delete through document_text so its existing FTS trigger also
+                // removes the old tokens, atomically with this metadata update.
+                try db.execute(sql: """
+                    UPDATE item SET textNeedsRefresh=1
+                    WHERE sourceID=? AND relativePath=? AND (bytes IS NOT ? OR modifiedAt IS NOT ?)
+                        AND EXISTS (SELECT 1 FROM document_text dt WHERE dt.itemID=item.id)
+                    """, arguments: [sourceID, file.relativePath, file.bytes, file.modifiedAt])
+                try db.execute(sql: """
+                    DELETE FROM document_text WHERE itemID IN (
+                        SELECT id FROM item WHERE sourceID=? AND relativePath=? AND textNeedsRefresh=1)
+                    """, arguments: [sourceID, file.relativePath])
                 let sensitivity = DocumentTextExtractor.isPotentiallySensitive(name: file.name) ? "suspected" : "normal"
                 try db.execute(sql: """
                     INSERT INTO item(id, sourceID, relativePath, name, typeIdentifier, bytes,
@@ -325,11 +344,11 @@ final class LibraryDatabase: Sendable {
                 if query.searchBody {
                     if word.count < 3 {
                         // Trigram cannot match 1–2 characters; keep short Chinese queries useful.
-                        matches.append("(i.sensitivity='normal' AND EXISTS (SELECT 1 FROM document_text dt WHERE dt.itemID=i.id AND dt.bodyText LIKE ? ESCAPE '\\'))")
+                        matches.append("(i.sensitivity='normal' AND (i.kind='imported' OR (i.isAvailable=1 AND s.isEnabled=1 AND s.lastError IS NULL)) AND EXISTS (SELECT 1 FROM document_text dt WHERE dt.itemID=i.id AND dt.bodyText LIKE ? ESCAPE '\\'))")
                         arguments += ["%\(escaped)%"]
                     } else {
                         matches.append("""
-                            (i.sensitivity='normal' AND i.id IN (SELECT dt.itemID FROM document_text dt
+                            (i.sensitivity='normal' AND (i.kind='imported' OR (i.isAvailable=1 AND s.isEnabled=1 AND s.lastError IS NULL)) AND i.id IN (SELECT dt.itemID FROM document_text dt
                                 JOIN document_text_fts ON document_text_fts.rowid=dt.rowid
                                 WHERE document_text_fts MATCH ?))
                             """)
@@ -499,7 +518,7 @@ final class LibraryDatabase: Sendable {
     }
 
     // Called only after the user explicitly allows indexing the selected document's text.
-    func saveDocumentText(itemID: String, text: String) async throws {
+    func saveDocumentText(itemID: String, text: String, expectedFile: LibraryFile? = nil) async throws {
         guard text.count <= 200_000 else { throw LibraryDataError.documentTextTooLong }
         guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             throw LibraryDataError.emptyDocumentText
@@ -511,16 +530,24 @@ final class LibraryDatabase: Sendable {
             guard sensitivity == "normal" else {
                 throw LibraryDataError.sensitiveDocument
             }
+            if let expectedFile, !expectedFile.isImported {
+                guard try Bool.fetchOne(db, sql: "SELECT i.bytes IS ? AND i.modifiedAt IS ? AND i.isAvailable=1 AND s.isEnabled=1 AND s.lastError IS NULL FROM item i JOIN source s ON s.id=i.sourceID WHERE i.id=?",
+                    arguments: [expectedFile.bytes, expectedFile.modifiedAt, itemID]) == true else {
+                    throw LibraryDataError.documentChanged
+                }
+            }
             try db.execute(sql: """
                 INSERT INTO document_text(itemID, bodyText, indexedAt) VALUES (?, ?, ?)
                 ON CONFLICT(itemID) DO UPDATE SET bodyText=excluded.bodyText, indexedAt=excluded.indexedAt
                 """, arguments: [itemID, text, Date()])
+            try db.execute(sql: "UPDATE item SET textNeedsRefresh=0 WHERE id=?", arguments: [itemID])
         }
     }
 
     func deleteDocumentText(itemID: String) async throws {
         try await queue.write { db in
             try db.execute(sql: "DELETE FROM document_text WHERE itemID=?", arguments: [itemID])
+            try db.execute(sql: "UPDATE item SET textNeedsRefresh=0 WHERE id=?", arguments: [itemID])
         }
     }
 
@@ -710,7 +737,7 @@ final class LibraryDatabase: Sendable {
         i.id, i.sourceID, i.relativePath, i.name, i.typeIdentifier, i.bytes,
         i.modifiedAt, i.createdAt, (i.isAvailable AND s.isEnabled) AS isAvailable,
         i.managedCopyPath, i.managedSHA256, i.managedAt,
-        i.kind AS itemKind, i.photoLocalIdentifier, i.sensitivity, i.importedFromPath,
+        i.kind AS itemKind, i.photoLocalIdentifier, i.sensitivity, i.importedFromPath, i.textNeedsRefresh,
         (SELECT dt.indexedAt FROM document_text dt WHERE dt.itemID=i.id) AS textIndexedAt,
         s.name AS sourceName, s.path AS sourcePath,
         CASE WHEN s.isEnabled=0 AND s.kind='photos' THEN COALESCE(s.lastError, '照片图库访问已关闭，请重新授权照片。')
@@ -726,6 +753,7 @@ final class LibraryDatabase: Sendable {
 }
 
 private enum LibraryDataError: LocalizedError {
+    case documentChanged
     case invalidObject, invalidManagedCopy, managedCopyNotSaved, invalidMatter, invalidAction
     case documentTextTooLong, emptyDocumentText, documentNotFound, sensitiveDocument
     case invalidFolderSource, invalidPhoto, invalidSensitivity
@@ -733,6 +761,7 @@ private enum LibraryDataError: LocalizedError {
 
     var errorDescription: String? {
         switch self {
+        case .documentChanged: "文件在识别期间已发生变化，请重新识别后保存正文。"
         case .invalidObject: "请填写对象名称，并选择设备或其它类型。"
         case .invalidManagedCopy: "托管副本路径或校验信息无效。"
         case .managedCopyNotSaved: "资料不存在或已有托管副本，本次副本未保存。"

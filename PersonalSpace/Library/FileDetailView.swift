@@ -146,18 +146,28 @@ struct FileDetailView: View {
                                     .font(.callout).foregroundStyle(.secondary)
                                 Text("更新于 " + date.formatted(date: .abbreviated, time: .shortened))
                                     .font(.caption).foregroundStyle(.secondary)
+                                Button("重新识别并保存正文") { Task { await model.indexSelectedDocument() } }
+                                    .disabled(model.indexingID != nil || model.previewURL == nil || (!file.isImported && (!file.isAvailable || file.sourceError != nil)))
                                 Button("移除正文索引") { Task { await model.removeDocumentText(file) } }
+                                if !file.isImported, !file.isAvailable {
+                                    Text("原件不可用期间，此正文不参与全文搜索。")
+                                        .font(.caption).foregroundStyle(.secondary)
+                                }
                             } else if file.sensitivity != "normal" {
                                 Text("此资料已标记敏感或疑似敏感，不读取正文、不保存正文索引、不交给模型。")
                                     .font(.callout).foregroundStyle(.secondary)
                             } else {
+                                if file.textNeedsRefresh {
+                                    Label("文件已变化，旧正文已移除。请重新识别。", systemImage: "arrow.clockwise")
+                                        .font(.callout).foregroundStyle(.secondary)
+                                }
                                 Text("只处理你选择的普通凭证，识别正文将以明文保存在本机，用于全文搜索。")
                                     .font(.callout).foregroundStyle(.secondary)
                                 if model.indexingID == file.id {
                                     HStack { ProgressView().controlSize(.small); Text("正在识别并保存正文…") }
                                 } else {
-                                    Button("识别并保存正文以供搜索") { Task { await model.indexSelectedDocument() } }
-                                        .disabled(model.indexingID != nil || model.previewURL == nil)
+                                    Button(file.textNeedsRefresh ? "重新识别并保存正文" : "识别并保存正文以供搜索") { Task { await model.indexSelectedDocument() } }
+                                        .disabled(model.indexingID != nil || model.previewURL == nil || (!file.isImported && (!file.isAvailable || file.sourceError != nil)))
                                 }
                             }
                         }

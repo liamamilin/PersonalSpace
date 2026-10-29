@@ -958,7 +958,7 @@ final class LibraryModel: ObservableObject {
     func saveDocumentText(file: LibraryFile, text: String) async -> Bool {
         guard let database else { return false }
         do {
-            try await database.saveDocumentText(itemID: file.id, text: text)
+            try await database.saveDocumentText(itemID: file.id, text: text, expectedFile: file)
             await reload()
             return true
         } catch {

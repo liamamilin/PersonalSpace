@@ -236,6 +236,100 @@ final class FullTextTests: XCTestCase {
         XCTAssertEqual(forbidden.total, 0)
     }
 
+    func testChangedMetadataInvalidatesTextWithoutChangingFactsLinksOrCopy() async throws {
+        let database = try LibraryDatabase(path: ":memory:")
+        let seeded = try await index(["合成凭证.txt"], database: database)
+        let item = try XCTUnwrap(seeded.first)
+        try await database.saveObject(id: "device", name: "合成设备", kind: "device", notes: "")
+        try await database.linkItems([item.id], to: "device")
+        try await database.saveMatter(MatterDraft(id: "matter", title: "合成保修", itemIDs: [item.id], facts: [
+            FactDraft(id: "fact", key: "product", valueText: "已确认商品", state: "confirmed", sourceItemID: item.id)
+        ]))
+        try await database.saveManagedCopy(itemID: item.id, relativePath: "copy/凭证.txt", sha256: String(repeating: "a", count: 64))
+        try await database.saveDocumentText(itemID: item.id, text: "oldquartz 星云")
+        let same = ScannedFile(relativePath: item.relativePath, name: item.name,
+            typeIdentifier: item.typeIdentifier, bytes: item.bytes, modifiedAt: item.modifiedAt)
+        try database.saveBatch([same], sourceID: "source", scanID: "unchanged")
+        let retained = try await database.documentText(itemID: item.id)
+        XCTAssertEqual(retained, "oldquartz 星云")
+
+        var changed = same
+        changed.modifiedAt = Date(timeIntervalSince1970: 1_800_000_000)
+        try database.saveBatch([changed], sourceID: "source", scanID: "modified")
+        let stale = try await database.files(FileQuery(search: "oldquartz", searchBody: true))
+        let shortStale = try await database.files(FileQuery(search: "星云", searchBody: true))
+        let refreshed = try await database.file(id: item.id)
+        let current = try XCTUnwrap(refreshed)
+        let facts = try await database.facts(matterID: "matter")
+        let links = try await database.files(FileQuery(objectID: "device"))
+        XCTAssertEqual(stale.total, 0)
+        XCTAssertEqual(shortStale.total, 0)
+        XCTAssertTrue(current.textNeedsRefresh)
+        XCTAssertNil(current.textIndexedAt)
+        XCTAssertEqual(current.managedCopyPath, "copy/凭证.txt")
+        XCTAssertEqual(facts.first?.state, "confirmed")
+        XCTAssertEqual(facts.first?.sourceItemID, item.id)
+        XCTAssertEqual(links.files.first?.id, item.id)
+        do {
+            try await database.saveDocumentText(itemID: item.id, text: "late old OCR", expectedFile: item)
+            XCTFail("Outdated extraction must not replace the current index")
+        } catch { }
+        try await database.saveDocumentText(itemID: item.id, text: "newnebula 新星", expectedFile: current)
+        let fresh = try await database.files(FileQuery(search: "newnebula", searchBody: true))
+        XCTAssertEqual(fresh.total, 1)
+        XCTAssertFalse(try XCTUnwrap(fresh.files.first).textNeedsRefresh)
+
+        changed.bytes += 1
+        try database.saveBatch([changed], sourceID: "source", scanID: "size-changed")
+        let sizeStale = try await database.documentText(itemID: item.id)
+        XCTAssertNil(sizeStale)
+    }
+
+    func testUnavailableSourceTextDoesNotMatchButMetadataAndAssociationsRemain() async throws {
+        let database = try LibraryDatabase(path: ":memory:")
+        let seeded = try await index(["历史凭证.txt"], database: database)
+        let item = try XCTUnwrap(seeded.first)
+        try await database.saveDocumentText(itemID: item.id, text: "archivedquartz 星云")
+        try database.finishScan(sourceID: "source", scanID: "missing")
+        for term in ["archivedquartz", "星云"] {
+            let result = try await database.files(FileQuery(search: term, searchBody: true))
+            XCTAssertEqual(result.total, 0)
+        }
+        let metadata = try await database.files(FileQuery(search: "历史凭证"))
+        XCTAssertEqual(metadata.files.first?.isAvailable, false)
+        try database.saveBatch([ScannedFile(relativePath: item.relativePath, name: item.name,
+            typeIdentifier: item.typeIdentifier, bytes: item.bytes)], sourceID: "source", scanID: "back")
+        let back = try await database.files(FileQuery(search: "archivedquartz", searchBody: true))
+        XCTAssertEqual(back.files.first?.id, item.id)
+        try await database.setSourceError("source", message: "需要重新授权")
+        let inaccessible = try await database.files(FileQuery(search: "archivedquartz", searchBody: true))
+        XCTAssertEqual(inaccessible.total, 0)
+    }
+
+    func testM9UpgradeInvalidatesAlreadyChangedBodyAndKeepsUnchangedBody() async throws {
+        let root = try workspace()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let path = root.appendingPathComponent("legacy.sqlite").path
+        let old = try LibraryDatabase(path: path)
+        let items = try await index(["changed.txt", "unchanged.txt"], database: old)
+        for item in items { try await old.saveDocumentText(itemID: item.id, text: "legacynebula") }
+        // Reproduce the released M9 shape and its already-stale index, without
+        // relying on this migration to manufacture the expected result.
+        try await old.queue.write { db in
+            try db.execute(sql: "ALTER TABLE item DROP COLUMN textNeedsRefresh")
+            try db.execute(sql: "DELETE FROM grdb_migrations WHERE identifier='M9.1-text-freshness'")
+            try db.execute(sql: "UPDATE document_text SET indexedAt='2026-01-01 00:00:00.000'")
+            try db.execute(sql: "UPDATE item SET modifiedAt='2026-02-01 00:00:00.000' WHERE name='changed.txt'")
+            try db.execute(sql: "UPDATE item SET modifiedAt='2025-12-01 00:00:00.000' WHERE name='unchanged.txt'")
+        }
+        try await old.queue.close()
+        let upgraded = try LibraryDatabase(path: path)
+        let matches = try await upgraded.files(FileQuery(search: "legacynebula", searchBody: true))
+        XCTAssertEqual(matches.files.map(\.name), ["unchanged.txt"])
+        let changed = try await upgraded.files(FileQuery(search: "changed.txt"))
+        XCTAssertTrue(try XCTUnwrap(changed.files.first { $0.name == "changed.txt" }).textNeedsRefresh)
+    }
+
     func testAllFourMatterKindsPersistWithFactsEvidenceAndConfirmedActions() async throws {
         let root = try workspace()
         defer { try? FileManager.default.removeItem(at: root) }

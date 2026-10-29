@@ -120,6 +120,7 @@ struct LibraryFile: Decodable, FetchableRecord, Identifiable, Sendable, Equatabl
     var managedSHA256: String? = nil
     var managedAt: Date? = nil
     var textIndexedAt: Date? = nil
+    var textNeedsRefresh = false
     var itemKind = "file"
     var photoLocalIdentifier: String? = nil
     var sensitivity = "normal"

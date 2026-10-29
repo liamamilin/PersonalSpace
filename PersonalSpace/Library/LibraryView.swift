@@ -247,7 +247,9 @@ struct LibraryView: View {
         }
         .task {
             model.openLibraryWindow = { openWindow(id: "library") }
-            await model.start()
+            // Unit tests start their own isolated models. Do not also scan the
+            // user's live sources from the XCTest host's restored window.
+            if NSClassFromString("XCTestCase") == nil { await model.start() }
         }
         .onChange(of: scenePhase) {
             if scenePhase == .active {
