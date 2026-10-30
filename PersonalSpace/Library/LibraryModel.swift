@@ -279,7 +279,7 @@ final class LibraryModel: ObservableObject {
     }
 
     @discardableResult
-    func addFolders(replacing source: FolderSource? = nil) -> Task<Void, Never>? {
+    func addFolders(replacing source: FolderSource? = nil, fromAssistant: Bool = false) -> Task<Bool, Never>? {
         guard database != nil else { return nil }
         let panel = NSOpenPanel()
         panel.title = source == nil ? "添加资料来源" : "重新授权来源"
@@ -290,12 +290,22 @@ final class LibraryModel: ObservableObject {
         panel.canChooseDirectories = true
         panel.allowsMultipleSelection = source == nil
         panel.canCreateDirectories = false
+        if fromAssistant, let owner = NSApp.windows.first(where: { $0.identifier?.rawValue == "library" }) {
+            // A sheet on the library leaves the separate assistant window usable.
+            return Task {
+                let response = await withCheckedContinuation { continuation in
+                    panel.beginSheetModal(for: owner) { continuation.resume(returning: $0) }
+                }
+                guard response == .OK else { return false }
+                for url in panel.urls { await saveFolder(url, replacing: source) }
+                return true
+            }
+        }
         guard panel.runModal() == .OK else { return nil }
         let urls = panel.urls
         return Task {
-            for url in urls {
-                await saveFolder(url, replacing: source)
-            }
+            for url in urls { await saveFolder(url, replacing: source) }
+            return true
         }
     }
 

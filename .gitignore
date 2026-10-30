@@ -39,3 +39,8 @@ evidence/Trial-Readiness/*
 evidence/Assistant/*
 !evidence/Assistant/README.md
 !evidence/Assistant/verification.json
+
+# Assistant streaming GUI and raw transport logs remain local.
+evidence/Assistant-Streaming/*
+!evidence/Assistant-Streaming/README.md
+!evidence/Assistant-Streaming/verification.json

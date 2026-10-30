@@ -10,6 +10,7 @@ struct AssistantToolResult {
     let value: AssistantJSON
     let summary: String
     var needsUserInput = false
+    var cancelled = false
 }
 
 enum AssistantTools {

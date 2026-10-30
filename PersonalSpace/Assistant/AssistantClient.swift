@@ -66,6 +66,73 @@ struct AssistantMessage: Codable, Sendable {
     var thinking: String?
 }
 
+struct AssistantStreamUpdate: Sendable {
+    let content: String
+    let thinkingCharacters: Int
+    let toolNames: [String]
+}
+
+// Ollama sends NDJSON deltas. Keep tool calls private until a complete done frame.
+struct AssistantStreamAccumulator {
+    private(set) var message = AssistantMessage(role: "assistant", content: "")
+    private(set) var done = false
+
+    mutating func append(_ line: String) throws {
+        struct Chunk: Decodable {
+            struct Delta: Decodable {
+                var content: String?
+                var thinking: String?
+                var tool_calls: [AssistantToolCall]?
+            }
+            var message: Delta?
+            var done: Bool?
+            var done_reason: String?
+            var error: String?
+        }
+        guard !done else { return }
+        let chunk = try JSONDecoder().decode(Chunk.self, from: Data(line.utf8))
+        if chunk.error != nil { throw AssistantError.message("本机模型返回错误，本轮未完成。") }
+        message.content += chunk.message?.content ?? ""
+        if let thought = chunk.message?.thinking { message.thinking = (message.thinking ?? "") + thought }
+        for call in chunk.message?.tool_calls ?? [] {
+            guard case .object = call.function.arguments else { throw AssistantError.message("模型返回了不完整工具参数，未执行本段操作。") }
+            var calls = message.tool_calls ?? []
+            let index = calls.firstIndex {
+                if let id = call.id { return $0.id == id }
+                return call.function.index != nil && $0.function.index == call.function.index && ($0.function.name == call.function.name || call.function.name.isEmpty)
+            }
+            if let index {
+                let previous = calls[index]
+                let arguments = previous.function.arguments.object.merging(call.function.arguments.object) { _, new in new }
+                calls[index] = AssistantToolCall(id: call.id ?? previous.id,
+                    function: .init(index: call.function.index ?? previous.function.index,
+                        name: call.function.name.isEmpty ? previous.function.name : call.function.name,
+                        arguments: .object(arguments)))
+            } else { calls.append(call) }
+            message.tool_calls = calls
+        }
+        if chunk.done == true {
+            guard chunk.done_reason != "length" else { throw AssistantError.message("模型输出达到长度限制，回复尚未完成；未执行本段工具请求。") }
+            for call in message.tool_calls ?? [] {
+                guard case .object = call.function.arguments, !call.function.name.isEmpty else {
+                    throw AssistantError.message("模型没有返回完整工具参数，未执行本段操作。")
+                }
+            }
+            done = true
+        }
+    }
+
+    var update: AssistantStreamUpdate {
+        AssistantStreamUpdate(content: message.content, thinkingCharacters: message.thinking?.count ?? 0,
+                              toolNames: (message.tool_calls ?? []).map(\.function.name))
+    }
+
+    func completedMessage() throws -> AssistantMessage {
+        guard done else { throw AssistantError.message("模型连接中断，回复未完成；未执行本段工具请求。") }
+        return message
+    }
+}
+
 struct AssistantLocalModel: Decodable, Identifiable, Sendable {
     let name: String
     var remote_model: String?
@@ -96,20 +163,47 @@ struct AssistantClient: Sendable {
         return available.sorted { $0.name < $1.name }
     }
 
-    func chat(model: String, messages: [AssistantMessage], tools: AssistantJSON, thinking: Bool = false) async throws -> AssistantMessage {
+    func chat(model: String, messages: [AssistantMessage], tools: AssistantJSON, thinking: Bool = false,
+              onUpdate: @escaping @MainActor @Sendable (AssistantStreamUpdate) -> Void) async throws -> AssistantMessage {
         struct Request: Encodable {
             let model: String
             let messages: [AssistantMessage]
             let tools: AssistantJSON
-            let stream = false
+            let stream = true
             let think: Bool
             let options: AssistantJSON = .object(["temperature": .number(0), "num_ctx": .number(16_384)])
         }
-        struct Response: Decodable { let message: AssistantMessage; let done: Bool }
-        let body = try JSONDecoder().decode(AssistantJSON.self, from: JSONEncoder().encode(Request(model: model, messages: messages, tools: tools, think: thinking)))
-        let response = try JSONDecoder().decode(Response.self, from: await request(path: "api/chat", body: body))
-        guard response.done else { throw AssistantError.message("模型没有返回完整结果，请重试。") }
-        return response.message
+        var request = URLRequest(url: base.appendingPathComponent("api/chat"))
+        request.httpMethod = "POST"
+        request.timeoutInterval = 180
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONEncoder().encode(Request(model: model, messages: messages, tools: tools, think: thinking))
+        do {
+            let (bytes, response) = try await URLSession.shared.bytes(for: request)
+            guard (response as? HTTPURLResponse)?.statusCode == 200 else {
+                throw AssistantError.message("本机模型请求失败，请检查 Ollama 和所选模型。")
+            }
+            var stream = AssistantStreamAccumulator()
+            var lastUpdate = ContinuousClock.now
+            var first = true
+            for try await line in bytes.lines where !line.isEmpty {
+                try Task.checkCancellation()
+                try stream.append(line)
+                // Coalesce very small chunks without delaying the first visible data.
+                if first || stream.done || lastUpdate.duration(to: .now) >= .milliseconds(70) {
+                    await onUpdate(stream.update)
+                    first = false
+                    lastUpdate = .now
+                }
+                if stream.done { break }
+            }
+            return try stream.completedMessage()
+        } catch {
+            if Task.isCancelled { throw CancellationError() }
+            if let error = error as? AssistantError { throw error }
+            if (error as? URLError)?.code == .timedOut { throw AssistantError.message("本机模型响应超时，已收到的文字会保留；本段工具请求未执行。") }
+            throw AssistantError.message("本机模型连接中断，已收到的文字会保留；请检查 Ollama 后重试。")
+        }
     }
 
     private func request(path: String, body: AssistantJSON? = nil) async throws -> Data {

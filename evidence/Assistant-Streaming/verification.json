@@ -1,0 +1,48 @@
+{
+  "version": "0.10.3",
+  "build": 16,
+  "debug_build": "passed",
+  "release_build": "passed",
+  "tests": {
+    "total": 89,
+    "failures": 0,
+    "duration_seconds": 40.077
+  },
+  "real_gui": {
+    "model": "qwen3.8:27b-mlx",
+    "streaming_before_completion": "passed: same answer grew from item 10 to item 29 while still running",
+    "stop_preserves_partial_answer": "passed",
+    "incomplete_answer_label": "passed",
+    "waiting_for_folder_selection": "passed",
+    "assistant_usable_while_folder_sheet_open": "passed",
+    "show_operation_window": "passed",
+    "metadata_only_synthetic_scan_files": 5000,
+    "intermediate_scan_batch_screenshot": "not captured; scan completed before capture",
+    "installed_release_cancel_ends_turn": "passed",
+    "installed_release_launch": "passed",
+    "daily_library_restored_unchanged": true,
+    "daily_counts": {
+      "item": 0,
+      "personal_object": 0,
+      "matter": 0,
+      "action": 0
+    }
+  },
+  "transport_tests": [
+    "text and thinking accumulation",
+    "stable tool ID merge",
+    "no completed message before done",
+    "no executable calls on EOF, truncation, service error or invalid arguments"
+  ],
+  "distribution": {
+    "zip": "PersonalSpace-0.10.3-16-local-arm64-20261030T101827Z.zip",
+    "zip_sha256": "aa364555ad21bbc3b434df14d5d8afe4c325b3f3d2dcc46d25eefc5866a90bae",
+    "signature": "ad hoc",
+    "sandbox": true,
+    "notarization": "not performed"
+  },
+  "limitations": [
+    "Initial model loading/prefill latency remains dependent on the local runtime.",
+    "Raw model thinking is not displayed."
+  ]
+}

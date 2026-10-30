@@ -5,6 +5,7 @@ struct AssistantView: View {
     @EnvironmentObject private var library: LibraryModel
     @Environment(\.openSettings) private var openSettings
     @FocusState private var inputFocused: Bool
+    @State private var followOutput = true
 
     var body: some View {
         VStack(spacing: 0) {
@@ -47,12 +48,35 @@ struct AssistantView: View {
                             HStack(spacing: 8) {
                                 ProgressView().controlSize(.small)
                                 Text(assistant.status).font(.callout).foregroundStyle(.secondary)
-                            }.id("working")
+                                Spacer()
+                                elapsed(since: assistant.startedAt, until: nil)
+                            }
+                            if assistant.canRevealPanel {
+                                Button("显示操作窗口", systemImage: "macwindow") { assistant.showOperationWindow() }
+                                    .controlSize(.small)
+                            }
+                        } else if assistant.awaitingConfirmation {
+                            Button("返回确认或编辑窗口", systemImage: "macwindow") { assistant.showOperationWindow() }
+                                .controlSize(.small)
                         }
+                        Color.clear.frame(height: 1).id("conversation-end")
                     }.frame(maxWidth: .infinity, alignment: .leading).padding(20)
                 }
+                .onScrollGeometryChange(for: Bool.self) { geometry in
+                    geometry.contentOffset.y + geometry.containerSize.height >= geometry.contentSize.height - 80
+                } action: { _, nearBottom in followOutput = nearBottom }
                 .onChange(of: assistant.lines.count) {
-                    if let id = assistant.lines.last?.id { proxy.scrollTo(id, anchor: .bottom) }
+                    if followOutput { proxy.scrollTo("conversation-end", anchor: .bottom) }
+                }
+                .onChange(of: assistant.lines.last?.text) {
+                    if followOutput { proxy.scrollTo("conversation-end", anchor: .bottom) }
+                }
+                .overlay(alignment: .bottomTrailing) {
+                    if !followOutput && !assistant.lines.isEmpty {
+                        Button("回到底部", systemImage: "arrow.down") {
+                            followOutput = true; proxy.scrollTo("conversation-end", anchor: .bottom)
+                        }.controlSize(.small).padding(12)
+                    }
                 }
             }
             Divider()
@@ -72,6 +96,7 @@ struct AssistantView: View {
                     Text(assistant.busy ? assistant.status : "本机处理 · 对话仅保留在本次会话")
                         .font(.caption).foregroundStyle(.secondary).lineLimit(1)
                     Spacer()
+                    if assistant.busy { elapsed(since: assistant.startedAt, until: nil) }
                     if assistant.busy {
                         Button("停止") { assistant.stop() }.accessibilityIdentifier("assistant-stop")
                     } else {
@@ -101,18 +126,64 @@ struct AssistantView: View {
         }.padding(.vertical, 14)
     }
 
+    @ViewBuilder private func elapsed(since start: Date?, until end: Date?) -> some View {
+        if let start {
+            if let end { duration(max(0, Int(end.timeIntervalSince(start)))) }
+            else {
+                TimelineView(.periodic(from: .now, by: 1)) { context in
+                    duration(max(0, Int(context.date.timeIntervalSince(start))))
+                }
+            }
+        }
+    }
+
+    private func duration(_ seconds: Int) -> some View {
+        Text(seconds < 60 ? "\(seconds) 秒" : "\(seconds / 60) 分 \(seconds % 60) 秒")
+            .font(.caption.monospacedDigit()).foregroundStyle(.secondary).fixedSize()
+            .accessibilityLabel("已用时 \(seconds) 秒")
+    }
+
     @ViewBuilder private func lineView(_ line: AssistantLine) -> some View {
         switch line.kind {
         case .operation:
-            Label(line.text, systemImage: "arrow.turn.down.right")
-                .font(.callout).foregroundStyle(.secondary).textSelection(.enabled)
+            VStack(alignment: .leading, spacing: 6) {
+                HStack(alignment: .top, spacing: 8) {
+                    if line.operationState == .running && assistant.waitingForPanel { Image(systemName: "hand.raised") }
+                    else if line.operationState == .running { ProgressView().controlSize(.mini) }
+                    else { Image(systemName: line.operationState == .failed ? "exclamationmark.triangle" : line.operationState == .waiting ? "hand.raised" : "arrow.turn.down.right") }
+                    Text(line.text).textSelection(.enabled)
+                    Spacer(minLength: 4)
+                    Text(line.operationState == .running && assistant.waitingForPanel ? "待你操作" : line.operationState?.rawValue ?? "已结束").font(.caption)
+                    elapsed(since: line.startedAt, until: line.finishedAt)
+                }
+                if let detail = line.detail { Text(detail).font(.caption).textSelection(.enabled) }
+                if line.operationState == .running {
+                    if line.toolName == "source_operation" {
+                        ForEach(library.scanning.keys.sorted().filter { line.sourceID == nil || line.sourceID == $0 }, id: \.self) { id in
+                            let name = library.sources.first(where: { $0.id == id })?.name ?? "文件夹"
+                            Text("「\(name)」已扫描 \(library.scanning[id] ?? 0) 份文件")
+                                .font(.caption.monospacedDigit())
+                        }
+                    }
+                    if ["file_operation", "choose_files_and_import"].contains(line.toolName ?? ""), library.isImporting {
+                        Text("当前复制：\(library.importCompleted) / \(library.importingTotal)")
+                            .font(.caption.monospacedDigit())
+                    }
+                }
+            }.font(.callout)
+                .foregroundStyle(line.operationState == .failed ? Color.orange : Color.secondary)
+                .padding(.leading, 10)
+                .overlay(alignment: .leading) { Rectangle().fill(.quaternary).frame(width: 2) }
         case .error:
             Label(line.text, systemImage: "exclamationmark.triangle")
                 .font(.callout).foregroundStyle(.orange).textSelection(.enabled)
         case .user, .assistant:
             VStack(alignment: .leading, spacing: 6) {
                 Text(line.kind == .user ? "你" : "助手").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
-                Text(line.text).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading)
+                Text(LocalizedStringKey(line.text)).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading)
+                if line.isPartial {
+                    Text(assistant.busy ? "正在输出…" : "此段回复未完成").font(.caption).foregroundStyle(.secondary)
+                }
             }
         }
     }

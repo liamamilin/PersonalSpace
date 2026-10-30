@@ -3,9 +3,17 @@ import SwiftUI
 
 struct AssistantLine: Identifiable {
     enum Kind { case user, assistant, operation, error }
+    enum OperationState: String { case running = "进行中", finished = "已结束", waiting = "待确认", failed = "未完成", cancelled = "已取消" }
     let id = UUID()
     let kind: Kind
-    let text: String
+    var text: String
+    var detail: String? = nil
+    var operationState: OperationState? = nil
+    var toolName: String? = nil
+    var sourceID: String? = nil
+    var isPartial = false
+    let startedAt = Date()
+    var finishedAt: Date? = nil
 }
 
 @MainActor
@@ -23,6 +31,13 @@ final class AssistantController: ObservableObject {
     private let client = AssistantClient()
     private var messages: [AssistantMessage] = []
     private var running: Task<Void, Never>?
+    @Published private(set) var startedAt: Date?
+    @Published private(set) var waitingForPanel = false
+    @Published private(set) var canRevealPanel = false
+    @Published private(set) var awaitingConfirmation = false
+    private var streamingLineID: UUID?
+    private var currentOperationID: UUID?
+    private var assistantScanIDs: Set<String> = []
 
     init(library: LibraryModel) { self.library = library }
 
@@ -44,8 +59,14 @@ final class AssistantController: ObservableObject {
         input = ""
         lines.append(AssistantLine(kind: .user, text: text))
         busy = true
+        startedAt = Date()
+        awaitingConfirmation = false
+        status = "正在连接本机模型…"
         running = Task {
-            defer { busy = false; running = nil }
+            defer {
+                busy = false; running = nil; waitingForPanel = false
+                currentOperationID = nil; assistantScanIDs = []; canRevealPanel = false
+            }
             do {
                 // Re-read the model list before a turn: cloud aliases are never offered.
                 await connect()
@@ -59,37 +80,56 @@ final class AssistantController: ObservableObject {
                 messages.append(AssistantMessage(role: "user", content: text))
                 for _ in 0..<12 {
                     try Task.checkCancellation()
-                    status = "正在理解和处理你的请求…"
-                    let answer = try await client.chat(model: selectedModel, messages: messages, tools: AssistantTools.schema, thinking: models.first(where: { $0.name == selectedModel })?.capabilities?.contains("thinking") == true)
+                    status = "正在等待本机模型响应…"
+                    streamingLineID = nil
+                    let answer = try await client.chat(model: selectedModel, messages: messages, tools: AssistantTools.schema,
+                        thinking: models.first(where: { $0.name == selectedModel })?.capabilities?.contains("thinking") == true) { [weak self] update in
+                            self?.receive(update)
+                        }
+                    if let index = lines.firstIndex(where: { $0.id == streamingLineID }) { lines[index].isPartial = false }
                     messages.append(answer)
                     let calls = answer.tool_calls ?? []
                     if calls.isEmpty {
                         guard !answer.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
                             throw AssistantError.message("模型没有返回回复，请换一种说法或重试。")
                         }
-                        lines.append(AssistantLine(kind: .assistant, text: answer.content))
                         status = "已回复 · 操作结果见上方记录"
                         return
                     }
                     var waitingForUser = false
+                    var cancelledSelection = false
                     for call in calls {
                         try Task.checkCancellation()
                         if waitingForUser {
-                            messages.append(AssistantMessage(role: "tool", content: "未执行：请先完成已经打开的确认或编辑窗口。", tool_name: call.function.name, tool_call_id: call.id))
+                            messages.append(AssistantMessage(role: "tool", content: cancelledSelection ? "未执行：用户已取消选择。" : "未执行：请先完成已经打开的确认或编辑窗口。", tool_name: call.function.name, tool_call_id: call.id))
                             continue
                         }
-                        status = AssistantTools.title(call.function.name) + "…"
+                        let operation = AssistantLine(kind: .operation, text: AssistantTools.title(call.function.name),
+                            detail: operationDetail(call), operationState: .running, toolName: call.function.name,
+                            sourceID: call.function.arguments["source_id"].string)
+                        lines.append(operation)
+                        currentOperationID = operation.id
+                        waitingForPanel = needsPanel(call)
+                        canRevealPanel = call.function.name == "source_operation" && ["choose", "reauthorize"].contains(call.function.arguments["operation"].string ?? "")
+                        status = waitingForPanel ? operation.detail ?? operation.text : operation.text + "…"
                         do {
                             let result = try await execute(call)
                             messages.append(AssistantMessage(role: "tool", content: result.value.encoded, tool_name: call.function.name, tool_call_id: call.id))
-                            lines.append(AssistantLine(kind: .operation, text: result.summary))
-                            waitingForUser = result.needsUserInput
+                            finishOperation(result.summary, state: result.cancelled ? .cancelled : result.needsUserInput ? .waiting : .finished)
+                            waitingForUser = result.needsUserInput || result.cancelled
+                            cancelledSelection = result.cancelled
+                            awaitingConfirmation = result.needsUserInput
                         } catch is CancellationError { throw CancellationError() }
                         catch {
                             let message = error.localizedDescription
                             messages.append(AssistantMessage(role: "tool", content: AssistantJSON.object(["success": .bool(false), "error": .string(message)]).encoded, tool_name: call.function.name, tool_call_id: call.id))
-                            lines.append(AssistantLine(kind: .error, text: AssistantTools.title(call.function.name) + "：" + message))
+                            finishOperation(message, state: .failed)
                         }
+                    }
+                    if cancelledSelection {
+                        lines.append(AssistantLine(kind: .assistant, text: "已取消选择，本轮没有继续后续操作。此前已经完成的操作仍保留。"))
+                        status = "已取消选择"
+                        return
                     }
                     if waitingForUser {
                         lines.append(AssistantLine(kind: .assistant, text: "请在资料库窗口核对并完成已打开的操作。完成后告诉我，我会读取实际保存结果继续处理。"))
@@ -100,17 +140,87 @@ final class AssistantController: ObservableObject {
                 lines.append(AssistantLine(kind: .assistant, text: "本轮已到操作次数上限，已完成的操作会保留。你可以让我继续处理剩余部分。"))
                 status = "可继续处理"
             } catch is CancellationError {
+                finishOperation("已停止。已完成的操作仍保留，可重新查询实际结果。", state: .cancelled)
+                // A cancelled tool stream must not be replayed as an unfinished command next turn.
+                messages = []
                 lines.append(AssistantLine(kind: .assistant, text: "已停止本轮。已经完成的保存和收纳仍保留。"))
                 status = "已停止"
             } catch {
+                finishOperation(error.localizedDescription, state: .failed)
                 lines.append(AssistantLine(kind: .error, text: error.localizedDescription))
                 status = "本轮未完成"
             }
         }
     }
 
-    func stop() { running?.cancel() }
-    func clear() { guard !busy else { return }; messages = []; lines = []; status = "新对话" }
+    func stop() {
+        running?.cancel()
+        if canRevealPanel, let panel = NSApp.windows.first(where: { $0.identifier?.rawValue == "library" })?.attachedSheet as? NSOpenPanel {
+            panel.cancel(nil)
+        }
+        for source in library.sources where assistantScanIDs.contains(source.id) { library.cancelScan(source) }
+    }
+    func clear() {
+        guard !busy else { return }
+        messages = []; lines = []; status = "新对话"; awaitingConfirmation = false; streamingLineID = nil
+    }
+
+    func showOperationWindow() {
+        NSApp.activate()
+        if let modal = NSApp.modalWindow { modal.makeKeyAndOrderFront(nil) }
+        else if let owner = NSApp.windows.first(where: { $0.attachedSheet != nil }) {
+            owner.makeKeyAndOrderFront(nil); owner.attachedSheet?.makeKeyAndOrderFront(nil)
+        } else { library.openLibraryWindow?() }
+    }
+
+    private func receive(_ update: AssistantStreamUpdate) {
+        if !update.content.isEmpty {
+            if let index = lines.firstIndex(where: { $0.id == streamingLineID }) { lines[index].text = update.content }
+            else {
+                let line = AssistantLine(kind: .assistant, text: update.content, isPartial: true)
+                lines.append(line); streamingLineID = line.id
+            }
+        }
+        if !update.toolNames.isEmpty { status = "正在准备：" + update.toolNames.map(AssistantTools.title).joined(separator: "、") }
+        else if !update.content.isEmpty { status = "正在流式输出回复…" }
+        else if update.thinkingCharacters > 0 { status = "本机模型正在分析 · 已接收 \(update.thinkingCharacters) 字符的推理数据" }
+    }
+
+    private func finishOperation(_ text: String, state: AssistantLine.OperationState) {
+        guard let index = lines.firstIndex(where: { $0.id == currentOperationID }) else { return }
+        lines[index].text = text; lines[index].operationState = state; lines[index].finishedAt = Date()
+        if lines[index].toolName == "source_operation" || waitingForPanel { lines[index].detail = nil }
+        currentOperationID = nil; waitingForPanel = false; canRevealPanel = false
+    }
+
+    private func needsPanel(_ call: AssistantToolCall) -> Bool {
+        let operation = call.function.arguments["operation"].string ?? ""
+        return call.function.name == "choose_files_and_import"
+            || (call.function.name == "source_operation" && ["choose", "reauthorize", "remove"].contains(operation))
+            || (call.function.name == "backup_operation" && ["export", "verify"].contains(operation))
+    }
+
+    private func operationDetail(_ call: AssistantToolCall) -> String {
+        let a = call.function.arguments, operation = a["operation"].string ?? ""
+        switch call.function.name {
+        case "source_operation":
+            if operation == "choose" || operation == "reauthorize" { return "等待选择文件夹 · 请在系统面板中授权" }
+            if operation == "remove" { return "等待你确认移除来源，原文件会保留" }
+            return library.sources.first(where: { $0.id == a["source_id"].string })?.name ?? "已授权的文件夹"
+        case "choose_files_and_import": return "等待选择文件 · 只复制原文件"
+        case "backup_operation": return operation == "export" ? "等待选择备份保存位置" : operation == "verify" ? "等待选择要验证的备份" : "使用现有备份设置和确认流程"
+        case "search_library":
+            let entity = ["files":"文件", "objects":"个人对象", "matters":"事务", "actions":"行动与实际提醒", "sources":"授权来源"][a["entity"].string ?? ""] ?? "资料"
+            let keyword = String((a["query"].string ?? "").prefix(80))
+            return keyword.isEmpty ? "查询" + entity : "查询" + entity + "：" + keyword
+        case "file_operation": return "处理 \(a["item_ids"].array.count) 份资料 · 原文件保持不变"
+        case "prepare_matter": return "准备可核对的事务草稿，尚未保存"
+        case "action_operation": return operation == "prepare" ? "准备行动编辑器，建议时间需确认" : "仅处理指定行动，并重新读取系统提醒"
+        case "inspect_file": return a["read_body"].bool ? "读取明确指定的非敏感凭证" : "读取文件信息与对象关联"
+        case "object_operation": return a["name"].string ?? "读取或更新指定对象的实际关联"
+        default: return "使用应用已有能力"
+        }
+    }
 
     private var instructions: String {
         """
@@ -162,8 +272,9 @@ final class AssistantController: ObservableObject {
         library.settingsSection = section
         openSettings?()
     }
-    private func result(_ summary: String, _ value: AssistantJSON = .object(["success": .bool(true)]), waiting: Bool = false) -> AssistantToolResult {
-        AssistantToolResult(value: value, summary: summary, needsUserInput: waiting)
+    private func result(_ summary: String, _ value: AssistantJSON = .object(["success": .bool(true)]), waiting: Bool = false, cancelled: Bool = false) -> AssistantToolResult {
+        let payload: AssistantJSON = cancelled ? .object(["success": .bool(false), "cancelled": .bool(true), "message": .string(summary)]) : value
+        return AssistantToolResult(value: payload, summary: summary, needsUserInput: waiting, cancelled: cancelled)
     }
     private func fileJSON(_ f: LibraryFile) -> AssistantJSON {
         .object(["id": .string(f.id), "name": .string(f.name), "type": .string(f.kind), "source_id": .string(f.sourceID),
@@ -213,7 +324,7 @@ final class AssistantController: ObservableObject {
             return result(library.importMessage ?? "已取消选择文件", .object([
                 "message": .string(library.importMessage ?? "User cancelled; nothing imported"),
                 "failures": .array(library.importFailures.map(AssistantJSON.string)),
-                "imported_ids": .array(library.lastImportedIDs.map(AssistantJSON.string))]))
+                "imported_ids": .array(library.importMessage == nil ? [] : library.lastImportedIDs.map(AssistantJSON.string))]), cancelled: library.importMessage == nil)
         case "source_operation": return try await operateSource(args)
         case "object_operation": return try await operateObject(args)
         case "prepare_matter": return try await prepareMatter(args)
@@ -383,38 +494,55 @@ final class AssistantController: ObservableObject {
         let sources = try await db.sources()
         let source = sources.first { $0.id == a["source_id"].string }
         if a["source_id"].string != nil, source == nil, operation != "choose" { throw AssistantError.message("来源不存在，请重新查询。") }
-        library.openLibraryWindow?()
+        if ["choose", "reauthorize", "remove"].contains(operation) { library.openLibraryWindow?() }
         library.errorMessage = nil
+        let alreadyScanning = Set(library.scanning.keys)
+        defer { assistantScanIDs = [] }
         switch operation {
         case "choose":
-            guard let work = library.addFolders() else { return result("已取消选择文件夹") }
-            await work.value
+            guard let work = library.addFolders(fromAssistant: true) else { return result("已取消选择文件夹", cancelled: true) }
+            guard await work.value else { return result("已取消选择文件夹", cancelled: true) }
+            waitingForPanel = false; canRevealPanel = false
+            status = "正在只读扫描文件元数据…"
+            if let index = lines.firstIndex(where: { $0.id == currentOperationID }) { lines[index].detail = "只读扫描，原文件保持不变" }
+            NSApp.windows.first(where: { $0.identifier?.rawValue == "assistant" })?.makeKeyAndOrderFront(nil)
+            assistantScanIDs = Set(library.scanning.keys).subtracting(alreadyScanning)
+            if Task.isCancelled { for s in library.sources where assistantScanIDs.contains(s.id) { library.cancelScan(s) }; throw CancellationError() }
             try checkError()
-            await library.waitForScans(library.sources.map(\.id))
+            await library.waitForScans(Array(assistantScanIDs))
         case "refresh":
             if a["source_id"].string != nil, source == nil { throw AssistantError.message("来源不存在。") }
             let chosen = source.map { [$0] } ?? sources
+            assistantScanIDs = Set(chosen.map(\.id)).subtracting(alreadyScanning)
             for s in chosen { guard !s.needsAuthorization else { throw AssistantError.message("来源需要先重新授权。") }; library.refresh(s) }
             await library.waitForScans(chosen.map(\.id))
         case "stop":
             for s in source.map({ [$0] }) ?? sources { library.cancelScan(s) }
         case "reauthorize":
             guard let source else { throw AssistantError.message("请先选择一个已有来源。") }
-            guard let work = library.addFolders(replacing: source) else { return result("已取消重新授权") }
-            await work.value
+            guard let work = library.addFolders(replacing: source, fromAssistant: true) else { return result("已取消重新授权", cancelled: true) }
+            guard await work.value else { return result("已取消选择文件夹", cancelled: true) }
+            waitingForPanel = false; canRevealPanel = false
+            status = "正在只读扫描文件元数据…"
+            if let index = lines.firstIndex(where: { $0.id == currentOperationID }) { lines[index].detail = "只读扫描，原文件保持不变" }
+            NSApp.windows.first(where: { $0.identifier?.rawValue == "assistant" })?.makeKeyAndOrderFront(nil)
+            assistantScanIDs = Set(library.scanning.keys).subtracting(alreadyScanning)
+            if Task.isCancelled { library.cancelScan(source); throw CancellationError() }
             await library.waitForScans([source.id])
         case "remove":
             guard let source else { throw AssistantError.message("来源不存在。") }
             let alert = NSAlert(); alert.messageText = "从资料库移除此来源？"
             alert.informativeText = "停止访问「\(source.name)」，保留原文件、对象关联和托管副本。"
             alert.addButton(withTitle: "移除来源"); alert.addButton(withTitle: "取消")
-            guard alert.runModal() == .alertFirstButtonReturn else { return result("已取消移除来源") }
+            guard alert.runModal() == .alertFirstButtonReturn else { return result("已取消移除来源", cancelled: true) }
             await library.remove(source)
         default: throw AssistantError.message("不支持的来源操作。")
         }
         try checkError()
+        try Task.checkCancellation()
         let after = try await db.sources()
-        return result("来源操作已结束，实际状态已重新读取", .object(["sources": .array(after.map { .object(["id": .string($0.id), "name": .string($0.name), "files": .number(Double($0.fileCount)), "error": $0.lastError.map(AssistantJSON.string) ?? .null, "needs_authorization": .bool($0.needsAuthorization)]) })]))
+        let summary = after.prefix(6).map { "\($0.name)：\($0.fileCount) 份" + ($0.lastError == nil ? "" : "（需要检查访问）") }.joined(separator: "，")
+        return result("来源操作已结束" + (summary.isEmpty ? "" : " · " + summary), .object(["sources": .array(after.map { .object(["id": .string($0.id), "name": .string($0.name), "files": .number(Double($0.fileCount)), "error": $0.lastError.map(AssistantJSON.string) ?? .null, "needs_authorization": .bool($0.needsAuthorization)]) })]))
     }
 
     private func operateObject(_ a: AssistantJSON) async throws -> AssistantToolResult {
@@ -592,6 +720,6 @@ final class AssistantController: ObservableObject {
             return result("已打开备份设置，请选择保留资料库并确认下次启动切换", .object(["status": .string("settings_open_not_switched")]), waiting: true)
         default: throw AssistantError.message("不支持的备份操作。")
         }
-        return result(library.backupMessage ?? "用户取消了操作", .object(["status": .string(library.backupMessage ?? "cancelled"), "verified_backup": library.verifiedBackup.map { .string($0.url.lastPathComponent) } ?? .null]))
+        return result(library.backupMessage ?? "用户取消了操作", .object(["status": .string(library.backupMessage ?? "cancelled"), "verified_backup": library.verifiedBackup.map { .string($0.url.lastPathComponent) } ?? .null]), cancelled: library.backupMessage == nil)
     }
 }

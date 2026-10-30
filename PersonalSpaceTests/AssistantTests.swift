@@ -3,6 +3,39 @@ import XCTest
 
 @MainActor
 final class AssistantTests: XCTestCase {
+    func testStreamingAccumulatesTextAndToolsWithoutPublishingIncompleteCalls() throws {
+        var stream = AssistantStreamAccumulator()
+        try stream.append(#"{"message":{"thinking":"local reasoning"},"done":false}"#)
+        XCTAssertEqual(stream.update.thinkingCharacters, 15)
+        try stream.append(#"{"message":{"content":"正在查询"},"done":false}"#)
+        try stream.append(#"{"message":{"content":"资料。","tool_calls":[{"id":"one","function":{"index":0,"name":"search_library","arguments":{"entity":"files"}}}]},"done":false}"#)
+        XCTAssertEqual(stream.update.content, "正在查询资料。")
+        XCTAssertThrowsError(try stream.completedMessage())
+        try stream.append(#"{"message":{"tool_calls":[{"id":"one","function":{"index":0,"name":"search_library","arguments":{"query":"电脑"}}},{"id":"two","function":{"index":1,"name":"library_info","arguments":{}}}]},"done":false}"#)
+        try stream.append(#"{"done":true,"done_reason":"stop"}"#)
+        let message = try stream.completedMessage()
+        XCTAssertEqual(message.tool_calls?.count, 2)
+        XCTAssertEqual(message.tool_calls?.first?.function.arguments["entity"].string, "files")
+        XCTAssertEqual(message.tool_calls?.first?.function.arguments["query"].string, "电脑")
+        XCTAssertEqual(message.content, "正在查询资料。")
+        XCTAssertEqual(message.thinking, "local reasoning")
+    }
+
+    func testBrokenOrTruncatedStreamsNeverReturnExecutableTools() throws {
+        var interrupted = AssistantStreamAccumulator()
+        try interrupted.append(#"{"message":{"content":"部分回复","tool_calls":[{"function":{"name":"object_operation","arguments":{"operation":"create","name":"未完成"}}}]},"done":false}"#)
+        XCTAssertEqual(interrupted.update.content, "部分回复")
+        XCTAssertThrowsError(try interrupted.completedMessage())
+        XCTAssertThrowsError(try interrupted.append(#"{"done":true,"done_reason":"length"}"#))
+        XCTAssertThrowsError(try interrupted.completedMessage())
+        var failed = AssistantStreamAccumulator()
+        XCTAssertThrowsError(try failed.append(#"{"error":"synthetic runtime failure"}"#))
+        XCTAssertThrowsError(try failed.completedMessage())
+        var invalidArguments = AssistantStreamAccumulator()
+        XCTAssertThrowsError(try invalidArguments.append(#"{"message":{"tool_calls":[{"function":{"name":"object_operation","arguments":"{unfinished"}}]},"done":true}"#))
+        XCTAssertThrowsError(try invalidArguments.completedMessage())
+    }
+
     private func call(_ name: String, _ arguments: [String: AssistantJSON] = [:]) -> AssistantToolCall {
         AssistantToolCall(function: .init(name: name, arguments: .object(arguments)))
     }
