@@ -34,3 +34,8 @@ evidence/Trial-Readiness/*
 !evidence/Trial-Readiness/README.md
 !evidence/Trial-Readiness/verification.json
 !evidence/Trial-Readiness/OBJECT-CONTEXT.md
+
+# Assistant acceptance contains only local model transcripts and environment details.
+evidence/Assistant/*
+!evidence/Assistant/README.md
+!evidence/Assistant/verification.json

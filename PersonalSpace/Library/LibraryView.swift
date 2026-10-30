@@ -34,6 +34,10 @@ struct LibraryView: View {
                     model.selectedFileID = nil
                     model.selectedSourceID = destination
                 })) {
+                    Button { openWindow(id: "assistant") } label: {
+                        Label("AI 助手", systemImage: "bubble.left.and.bubble.right")
+                            .frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle())
+                    }.buttonStyle(.plain)
                     Section("资料库") {
                         HStack {
                             Label("待整理", systemImage: "tray.and.arrow.down")
@@ -301,6 +305,11 @@ struct LibraryView: View {
         }
         .sheet(isPresented: $model.showObjectEditor) {
             ObjectEditorView(object: model.objectBeingEdited).environmentObject(model)
+        }
+        .sheet(item: $model.assistantActionRequest) { request in
+            ActionEditorView(draft: request.draft) { draft in
+                await model.saveAction(draft, matterID: request.matterID)
+            }
         }
         .sheet(isPresented: $model.showLinkSheet) { LinkToObjectSheet().environmentObject(model) }
         .sheet(isPresented: $model.showFilePicker) {

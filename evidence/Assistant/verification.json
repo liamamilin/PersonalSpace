@@ -1,0 +1,58 @@
+{
+  "version": "0.10.2",
+  "build": 15,
+  "environment": "current developer account, isolated synthetic library",
+  "debug_build": "passed",
+  "release_build": "passed",
+  "tests": {
+    "count": 87,
+    "failures": 0,
+    "duration_seconds": 39.884,
+    "result_bundle_local": ".build/Assistant/release-validation-tests.xcresult"
+  },
+  "runtime": {
+    "provider": "local Ollama",
+    "tool_models_used": [
+      "qwen3.5:9b-mlx",
+      "qwen3.8:27b-mlx"
+    ],
+    "complex_action_editor_verified_with": "qwen3.8:27b-mlx",
+    "cloud_models_offered": false,
+    "model_downloaded": false
+  },
+  "gui": {
+    "folder_panel_and_read_only_scan": "passed in Debug",
+    "quick_import_pdf_and_managed_preview": "passed in Release",
+    "object_linked_files": 3,
+    "matter_evidence_links": 2,
+    "facts_reviewed_and_confirmed": 3,
+    "independent_actions": 2,
+    "actual_system_pending_requests_before_completion": 2,
+    "A_completed_B_request_retained": "passed",
+    "B_cancelled_after_acceptance": "passed",
+    "backup_export_verified_file_count": 5,
+    "stop_request": "passed",
+    "daily_library_original_id_restored": true,
+    "daily_items_objects_matters_actions": 0,
+    "user_applications_launch": "passed",
+    "photos_permissions_via_chat": "not retested",
+    "chat_removal_and_activation_confirmation": "not retested"
+  },
+  "originals_sha256_unchanged": true,
+  "database_integrity": "ok",
+  "distribution": {
+    "signature": "ad hoc",
+    "sandbox": true,
+    "network_client": true,
+    "developer_id": false,
+    "notarized": false,
+    "independent_account_installation": "not verified",
+    "zip": "PersonalSpace-0.10.2-15-local-arm64-20261030T093959Z.zip",
+    "zip_sha256": "6161cde9bb3c9e806659b71e4ce492ed613735abfd3c686177d7379a63012d7b"
+  },
+  "limitations": [
+    "9B model omitted requirements and produced missing tool arguments; complex requests require stepwise review.",
+    "Model availability and latency depend on the local runtime.",
+    "Chat is memory-only; no conversation history is persisted."
+  ]
+}

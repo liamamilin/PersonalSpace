@@ -233,7 +233,7 @@ struct MatterDetailView: View {
                                    let file = model.matterFiles.first(where: { $0.id == sourceID }) {
                                     Text("出处：" + file.name).font(.caption).foregroundStyle(.secondary)
                                 } else {
-                                    Text(fact.origin == "user" ? "手动填写" : "来源资料暂不可用")
+                                    Text(fact.origin == "user" ? "手动填写" : fact.origin == "model" ? "模型建议，请对照凭证核对" : "来源资料暂不可用")
                                         .font(.caption).foregroundStyle(.secondary)
                                 }
                                 if let excerpt = fact.sourceExcerpt, !excerpt.isEmpty {
@@ -802,7 +802,7 @@ private struct FactEditorRow: View {
             }
             HStack(alignment: .top, spacing: 6) {
                 Text(fact.state == "confirmed" ? "已确认" : "候选").foregroundStyle(fact.state == "confirmed" ? Color.secondary : Color.orange)
-                Text(sourceName.map { "出处：" + $0 } ?? "手动填写").foregroundStyle(.secondary)
+                Text(sourceName.map { "出处：" + $0 } ?? (fact.origin == "model" ? "模型建议，请对照凭证核对" : "手动填写")).foregroundStyle(.secondary)
             }.font(.caption)
             if let excerpt = fact.sourceExcerpt, !excerpt.isEmpty {
                 Text("原文：\(excerpt)").font(.caption).foregroundStyle(.secondary).textSelection(.enabled)

@@ -2,17 +2,26 @@ import SwiftUI
 
 @main
 struct PersonalSpaceApp: App {
-    @StateObject private var model = LibraryModel()
+    @StateObject private var model: LibraryModel
+    @StateObject private var assistant: AssistantController
+    init() {
+        let library = LibraryModel()
+        _model = StateObject(wrappedValue: library)
+        _assistant = StateObject(wrappedValue: AssistantController(library: library))
+    }
     var body: some Scene {
-        WindowGroup("PersonalSpace", id: "library") {
+        Window("PersonalSpace", id: "library") {
             LibraryView().environmentObject(model)
         }
         .defaultSize(width: 1160, height: 740)
         .commands { LibraryCommands(model: model) }
+        Window("PersonalSpace 助手", id: "assistant") {
+            AssistantView().environmentObject(assistant).environmentObject(model)
+        }.defaultSize(width: 620, height: 740)
         Settings {
-            TabView {
-                SourcesView().tabItem { Label("来源", systemImage: "folder") }
-                BackupView().tabItem { Label("备份", systemImage: "externaldrive") }
+            TabView(selection: $model.settingsSection) {
+                SourcesView().tabItem { Label("来源", systemImage: "folder") }.tag("sources")
+                BackupView().tabItem { Label("备份", systemImage: "externaldrive") }.tag("backup")
             }.environmentObject(model)
         }
     }
@@ -20,6 +29,7 @@ struct PersonalSpaceApp: App {
 
 struct LibraryCommands: Commands {
     @ObservedObject var model: LibraryModel
+    @Environment(\.openWindow) private var openWindow
     var body: some Commands {
         CommandGroup(replacing: .newItem) {
             Button("收纳文件…") { model.chooseImportFiles() }.keyboardShortcut("i", modifiers: [.command, .shift])
@@ -36,6 +46,8 @@ struct LibraryCommands: Commands {
         }
         CommandGroup(after: .textEditing) {
             Button("搜索资料") { model.searchFocusRequest += 1 }.keyboardShortcut("f")
+            Button("打开 AI 助手") { openWindow(id: "assistant") }
+                .keyboardShortcut("a", modifiers: [.command, .option])
         }
         CommandGroup(after: .sidebar) {
             Button("显示或隐藏详情") { model.inspectorToggleRequest += 1 }

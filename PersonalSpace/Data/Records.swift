@@ -189,4 +189,5 @@ struct FileQuery: Sendable {
     var sort: FileSort = .name
     var ascending = true
     var limit = 500
+    var offset = 0
 }

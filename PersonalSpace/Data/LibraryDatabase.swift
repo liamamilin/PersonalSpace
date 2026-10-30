@@ -382,8 +382,8 @@ final class LibraryDatabase: Sendable {
             let total = try Int.fetchOne(db, sql: "SELECT COUNT(*) " + from, arguments: arguments) ?? 0
             let files = try LibraryFile.fetchAll(db, sql: """
                 SELECT \(Self.fileColumns)
-                \(from) ORDER BY \(query.sort.sql) \(query.ascending ? "ASC" : "DESC"), i.id LIMIT ?
-                """, arguments: arguments + [query.limit])
+                \(from) ORDER BY \(query.sort.sql) \(query.ascending ? "ASC" : "DESC"), i.id LIMIT ? OFFSET ?
+                """, arguments: arguments + [query.limit, max(0, query.offset)])
             return (files, total)
         }
     }

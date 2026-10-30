@@ -45,6 +45,10 @@ struct ActionEditorView: View {
                 }
                 Toggle("我已确认具体提醒日期和时间", isOn: $draft.dateConfirmed)
                     .accessibilityIdentifier("action-date-confirmed")
+                if !draft.dateConfirmed, let proposed = draft.remindAt {
+                    Text("待确认的提醒建议：" + proposed.formatted(date: .abbreviated, time: .shortened) + "。请核对后勾选确认。")
+                        .font(.callout).foregroundStyle(.secondary)
+                }
                 if draft.dateConfirmed {
                     DatePicker("提醒时间", selection: $reminderDate, displayedComponents: [.date, .hourAndMinute])
                         .accessibilityIdentifier("action-reminder-date")

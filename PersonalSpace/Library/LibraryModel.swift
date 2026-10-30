@@ -19,6 +19,8 @@ final class LibraryModel: ObservableObject {
     @Published var showMatterEditor = false
     @Published var matterDraft = MatterDraft()
     @Published var matterObjectSelectionMessage: String?
+    @Published var assistantActionRequest: AssistantActionRequest?
+    @Published var settingsSection = "sources"
     let reminders: ReminderController
     let photoLibrary = PhotoLibraryController()
     @Published var photoPreviewImage: NSImage?
@@ -71,12 +73,16 @@ final class LibraryModel: ObservableObject {
     @Published var importingTotal = 0
     @Published var importCompleted = 0
     @Published var importMessage: String?
+    private(set) var lastImportedIDs: [String] = []
     @Published var importFailures: [String] = []
     @Published var filePendingRemoval: LibraryFile?
     @Published var removingFileID: String?
     @Published var pendingCopyRemoval: String?
     @Published private var loadingDrop = false
     private let database: LibraryDatabase?
+    var assistantDatabase: LibraryDatabase? { database }
+    private var importTask: Task<Void, Never>?
+    private var backupTask: Task<Void, Never>?
     private var scanTasks: [String: Task<Void, Never>] = [:]
     private var folderWatchers: [String: (watcher: FolderWatcher, root: URL)] = [:]
     private var sourceDebounces: [String: Task<Void, Never>] = [:]
@@ -272,8 +278,9 @@ final class LibraryModel: ObservableObject {
         }
     }
 
-    func addFolders(replacing source: FolderSource? = nil) {
-        guard database != nil else { return }
+    @discardableResult
+    func addFolders(replacing source: FolderSource? = nil) -> Task<Void, Never>? {
+        guard database != nil else { return nil }
         let panel = NSOpenPanel()
         panel.title = source == nil ? "添加资料来源" : "重新授权来源"
         panel.message = source == nil ? "文件保留在原位置，PersonalSpace 仅建立本地索引。" :
@@ -283,9 +290,9 @@ final class LibraryModel: ObservableObject {
         panel.canChooseDirectories = true
         panel.allowsMultipleSelection = source == nil
         panel.canCreateDirectories = false
-        guard panel.runModal() == .OK else { return }
+        guard panel.runModal() == .OK else { return nil }
         let urls = panel.urls
-        Task {
+        return Task {
             for url in urls {
                 await saveFolder(url, replacing: source)
             }
@@ -343,11 +350,12 @@ final class LibraryModel: ObservableObject {
         importingTotal = urls.count
         importCompleted = 0
         importFailures = []
+        lastImportedIDs = []
         importMessage = nil
         selectedSourceID = "inbox"
         selectedFileID = nil
         search = ""
-        Task {
+        importTask = Task {
             defer {
                 scopedURLs.forEach { $0.stopAccessingSecurityScopedResource() }
                 importingTotal = 0
@@ -357,6 +365,7 @@ final class LibraryModel: ObservableObject {
                 do {
                     let id = try await store.importFile(sourceURL: url, database: database)
                     importedIDs.append(id)
+                    lastImportedIDs.append(id)
                     await reload()
                     if isInbox { selectedFileID = id }
                 } catch {
@@ -368,6 +377,12 @@ final class LibraryModel: ObservableObject {
             await reload()
         }
         return true
+    }
+
+    func waitForImport() async { await importTask?.value }
+    func waitForBackup() async { await backupTask?.value }
+    func waitForScans(_ ids: [String]) async {
+        for id in ids { await scanTasks[id]?.value }
     }
 
     private func saveFolder(_ url: URL, replacing source: FolderSource?) async {
@@ -1081,7 +1096,7 @@ final class LibraryModel: ObservableObject {
         guard panel.runModal() == .OK, let destination = panel.url else { return }
         backupBusy = true
         backupMessage = "正在建立一致性快照、复制托管凭证并校验…"
-        Task {
+        backupTask = Task {
             let scoped = destination.startAccessingSecurityScopedResource()
             defer { if scoped { destination.stopAccessingSecurityScopedResource() }; backupBusy = false }
             do {
@@ -1114,7 +1129,7 @@ final class LibraryModel: ObservableObject {
         guard panel.runModal() == .OK, let url = panel.url else { return }
         backupBusy = true
         backupMessage = "正在校验备份内容…"
-        Task {
+        backupTask = Task {
             let scoped = url.startAccessingSecurityScopedResource()
             defer { if scoped { url.stopAccessingSecurityScopedResource() }; backupBusy = false }
             do {
@@ -1131,7 +1146,7 @@ final class LibraryModel: ObservableObject {
         backupCandidate = nil
         backupBusy = true
         backupMessage = "正在恢复到新目录并验证资料库与托管凭证…"
-        Task {
+        backupTask = Task {
             defer { backupBusy = false }
             var ownedDirectory: URL?
             do {
@@ -1167,7 +1182,7 @@ final class LibraryModel: ObservableObject {
         guard !backupBusy, let librarySelection, let libraryLocation else { return }
         backupBusy = true
         backupMessage = "正在验证要切回的资料库…"
-        Task {
+        backupTask = Task {
             defer { backupBusy = false }
             do {
                 try await Task.detached(priority: .utility) {
@@ -1182,7 +1197,7 @@ final class LibraryModel: ObservableObject {
     func previewRetainedLibrary(_ location: LibraryLocation) {
         guard !backupBusy else { return }
         backupBusy = true
-        Task {
+        backupTask = Task {
             defer { backupBusy = false }
             do {
                 let saved = try LibraryDatabase(path: location.databaseURL.path)
@@ -1205,7 +1220,7 @@ final class LibraryModel: ObservableObject {
         backupBusy = true
         verifiedBackup = nil
         backupMessage = "正在校验备份内容与完整性…"
-        Task {
+        backupTask = Task {
             let scoped = source.startAccessingSecurityScopedResource()
             defer { if scoped { source.stopAccessingSecurityScopedResource() }; backupBusy = false }
             do {
@@ -1222,7 +1237,7 @@ final class LibraryModel: ObservableObject {
         finishBackupPreview()
         backupBusy = true
         backupMessage = "正在准备临时预览副本…"
-        Task {
+        backupTask = Task {
             defer { backupBusy = false }
             do {
                 let source = FolderSource(id: "backup", name: "备份", path: candidate.url.path,
