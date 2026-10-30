@@ -453,6 +453,9 @@ struct MatterEditorView: View {
                         Text("不关联对象").tag(String?.none)
                         ForEach(model.objects) { object in Text(object.name).tag(Optional(object.id)) }
                     }
+                    if let message = model.matterObjectSelectionMessage, !editing {
+                        Text(message).font(.callout).foregroundStyle(.secondary)
+                    }
                     Picker("事务状态", selection: $draft.status) {
                         Text("跟进中").tag("active")
                         Text("已完成").tag("completed")

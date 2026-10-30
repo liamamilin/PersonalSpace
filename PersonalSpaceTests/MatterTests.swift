@@ -31,6 +31,69 @@ final class MatterTests: XCTestCase {
         } catch { }
     }
 
+    func testCreatingMatterUsesCapturedEvidenceAndItsSingleObject() async throws {
+        let root = try workspace()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let database = try LibraryDatabase(path: root.appendingPathComponent("library.sqlite").path)
+        let file = try await evidence(database: database, root: root)
+        try await database.saveObject(id: "computer", name: "我的电脑", kind: "device", notes: "")
+        try await database.linkItems([file.id], to: "computer")
+        let model = LibraryModel(database: database)
+        await model.reload()
+        model.selectedFileID = file.id
+        let creation = model.createMatter(kind: .warranty)
+        // Changing selection while the query is suspended must not change its context.
+        model.selectedFileID = nil
+        model.selectedSourceID = "objects"
+        await creation.value
+        XCTAssertTrue(model.showMatterEditor)
+        XCTAssertEqual(model.matterDraft.itemIDs, [file.id])
+        XCTAssertEqual(model.matterDraft.objectID, "computer")
+        XCTAssertNil(model.matterObjectSelectionMessage)
+        var draft = model.matterDraft
+        draft.title = "电脑保修"
+        draft.actions = [ActionDraft(title: "检查保修日期")]
+        try await database.saveMatter(draft)
+        let related = try await database.matters().filter { $0.objectID == "computer" }
+        XCTAssertEqual(related.map(\.id), [draft.id])
+        let actions = try await database.actions(matterID: draft.id)
+        XCTAssertEqual(actions.first?.title, "检查保修日期")
+        let owners = try await database.objectsForItem(file.id)
+        XCTAssertEqual(owners.map(\.id), ["computer"])
+        // Clearing the preselection does not unlink the original evidence.
+        draft.objectID = nil
+        try await database.saveMatter(draft)
+        let cleared = try await database.matter(id: draft.id)
+        let retainedOwners = try await database.objectsForItem(file.id)
+        XCTAssertNil(cleared?.objectID)
+        XCTAssertEqual(retainedOwners.map(\.id), ["computer"])
+    }
+
+    func testCreatingMatterWithNoOrMultipleOwnersAndExplicitObjectContext() async throws {
+        let root = try workspace()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let database = try LibraryDatabase(path: root.appendingPathComponent("library.sqlite").path)
+        let file = try await evidence(database: database, root: root)
+        let model = LibraryModel(database: database)
+        await model.reload()
+        model.selectedFileID = file.id
+        await model.createMatter(kind: .order).value
+        XCTAssertNil(model.matterDraft.objectID)
+        XCTAssertNil(model.matterObjectSelectionMessage)
+        for id in ["computer", "home"] {
+            try await database.saveObject(id: id, name: id, kind: "other", notes: "")
+            try await database.linkItems([file.id], to: id)
+        }
+        await model.createMatter(kind: .warranty).value
+        XCTAssertNil(model.matterDraft.objectID)
+        XCTAssertNotNil(model.matterObjectSelectionMessage)
+        model.selectedSourceID = "object:home"
+        await model.createMatter(kind: .warranty).value
+        XCTAssertEqual(model.matterDraft.objectID, "home")
+        XCTAssertEqual(model.matterDraft.itemIDs, [file.id])
+        XCTAssertNil(model.matterObjectSelectionMessage)
+    }
+
     // Exact released M1/M2 schemas and migration IDs exercise an upgrade, not fresh creation.
     private func createM2Database(path: String, managedPath: String, sha256: String) throws {
         let queue = try DatabaseQueue(path: path)

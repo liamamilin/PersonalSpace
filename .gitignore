@@ -28,3 +28,9 @@ evidence/M6/entitlements.plist
 evidence/M6/signature.txt
 evidence/M6/signing-identities.txt
 evidence/M6/LOCAL-BUILD.txt
+
+# Trial screenshots and system paths remain local; publish only sanitized results.
+evidence/Trial-Readiness/*
+!evidence/Trial-Readiness/README.md
+!evidence/Trial-Readiness/verification.json
+!evidence/Trial-Readiness/OBJECT-CONTEXT.md

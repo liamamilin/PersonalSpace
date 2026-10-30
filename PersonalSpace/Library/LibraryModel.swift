@@ -18,6 +18,7 @@ final class LibraryModel: ObservableObject {
     @Published var reminderMessage: String?
     @Published var showMatterEditor = false
     @Published var matterDraft = MatterDraft()
+    @Published var matterObjectSelectionMessage: String?
     let reminders: ReminderController
     let photoLibrary = PhotoLibraryController()
     @Published var photoPreviewImage: NSImage?
@@ -765,13 +766,37 @@ final class LibraryModel: ObservableObject {
         createMatter(kind: .order)
     }
 
-    func createMatter(kind: MatterKind) {
+    @discardableResult
+    func createMatter(kind: MatterKind) -> Task<Void, Never> {
         errorMessage = nil
-        matterDraft = MatterDraft()
-        matterDraft.kind = kind.rawValue
-        if let file = selectedFile, isFileList { matterDraft.itemIDs = [file.id] }
-        if let objectID = currentObjectID { matterDraft.objectID = objectID }
-        showMatterEditor = true
+        // Capture this operation's context before the database query can suspend.
+        let itemID = isFileList ? selectedFile?.id : nil
+        let objectID = currentObjectID
+        var draft = MatterDraft()
+        draft.kind = kind.rawValue
+        draft.itemIDs = itemID.map { [$0] } ?? []
+        draft.objectID = objectID
+        matterDraft = draft
+        matterObjectSelectionMessage = nil
+        return Task {
+            do {
+                var message: String?
+                if objectID == nil, let itemID, let database {
+                    let owners = try await database.objectsForItem(itemID)
+                    if owners.count == 1 { draft.objectID = owners[0].id }
+                    else if owners.count > 1 {
+                        message = "此凭证关联了多个个人对象，请选择本事务的关联对象，也可保持不关联。"
+                    }
+                }
+                guard matterDraft.id == draft.id else { return }
+                matterDraft = draft
+                matterObjectSelectionMessage = message
+                showMatterEditor = true
+            } catch {
+                guard matterDraft.id == draft.id else { return }
+                errorMessage = "读取凭证的对象关联失败，请重试。"
+            }
+        }
     }
 
     func editMatter(_ matter: MatterRecord) async {
@@ -790,6 +815,7 @@ final class LibraryModel: ObservableObject {
             }
             draft.actions = actions.map(ActionDraft.init)
             matterDraft = draft
+            matterObjectSelectionMessage = nil
             showMatterEditor = true
         } catch { errorMessage = "无法读取事务，请重试。" }
     }
