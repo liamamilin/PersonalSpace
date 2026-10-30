@@ -139,6 +139,10 @@ M4 使用系统 SQLite FTS5 trigram，只有明确保存的正文进入索引。
 
 「验证并查看备份」直接校验原备份，不创建永久恢复库。主动预览托管凭证时使用临时目录，关闭预览或正常退出后清理；「恢复并启用」及保留的旧资料库不受清理影响。恢复库显示备份名称和日期，切换前说明旧库提醒继续保留、新库不会自动安排通知。真实构建、截图与验收限制见 [Product Polish 记录](evidence/Product-Polish/README.md)。后续已定位本机 FSEvents 服务异常，完整 78 项测试及真实自动刷新回归通过，见 [文件监听修复记录](evidence/Folder-Watching-Fix/README.md)。
 
+## Trial Readiness · 2026-10-30
+
+从凭证创建事务会保留对象上下文：唯一关联自动预选，多关联提示选择，用户可更改或清除。完整 84 项回归、Debug / Release 构建及打包产物的真实操作验收通过，标记 **Trial Ready（当前开发账户的隔离合成环境）**。没有独立账户或 Developer ID 证书，当前 ad hoc ZIP 的 Gatekeeper 评估为 rejected，未完成签名公证公开分发。详见 [试用验收记录](evidence/Trial-Readiness/README.md)。
+
 ## 一句话定义
 
 PersonalSpace 让用户从 Mac 上散落的文件和照片中，**找到资料、组织个人对象、关联事务、采取行动**。它是个人数字空间的统一入口，而不是 Finder、Photos 或 Passwords 的克隆。

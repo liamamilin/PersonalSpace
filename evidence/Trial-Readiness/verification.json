@@ -1,0 +1,73 @@
+{
+  "date": "2026-10-30",
+  "environment": "current-development-account-isolated-synthetic-library",
+  "independentAccount": "not-verified-no-existing-independent-account",
+  "developerID": "unavailable",
+  "notarization": "not-performed",
+  "gatekeeperModified": false,
+  "quarantineModified": false,
+  "fullRegression": {
+    "total": 84,
+    "failures": 0,
+    "durationSeconds": 40.378
+  },
+  "debugBuild": "passed",
+  "releaseBuild": "passed",
+  "sandbox": true,
+  "package": {
+    "file": "PersonalSpace-0.10.1-14-local-arm64-20261030T035514Z.zip",
+    "sha256": "1f4d65ba9d90b0a0a91323053fdcefa570f8067398fd472d8933e4b6845960ca",
+    "zipIntegrity": "passed",
+    "signature": "ad-hoc",
+    "gatekeeperAssessment": "rejected-exit-3",
+    "launchFromExtractedZIP": "passed-process-path-verified",
+    "quarantinedDownloadLaunch": "not-verified",
+    "architecture": "arm64"
+  },
+  "gui": {
+    "emptyLibrary": "passed",
+    "addFolder": "passed",
+    "systemPanelPDFPNGAndTXT": "passed",
+    "finderThreeFileDrop": "passed-user-performed-and-app-confirmed",
+    "searchAndPreviews": "passed",
+    "openManagedPDFInDefaultApp": "passed",
+    "objectContextNoneSingleMultipleAndCurrentObject": "passed",
+    "objectRelatedMatterAndEvidenceNavigation": "passed",
+    "orderAndWarrantyFacts": "passed",
+    "twoActualPendingSystemReminders": "passed",
+    "completeAKeepsB": "passed",
+    "relaunchAndTodo": "passed",
+    "sourceChangesAndStableRelationships": "passed",
+    "listenerAfterRelaunch": "passed",
+    "exportAndVerifyBackup": "passed",
+    "temporaryPreviewCleanup": "passed-actual-directory-removed",
+    "restoreActivateAndRelaunch": "passed",
+    "reauthorizeAtDifferentPath": "passed",
+    "restoredNotificationAbsenceAndManualReschedule": "passed-actual-system-requests",
+    "editFactsAndAddActionAfterRestore": "passed",
+    "importAfterRestore": "passed",
+    "switchBackToOldLibrary": "passed",
+    "returnToOriginalLibrary": "passed",
+    "syntheticTestRemindersEnded": "passed"
+  },
+  "status": "Trial Ready — local isolated development-account environment",
+  "dataChecks": {
+    "originalSyntheticSHA256Unchanged": true,
+    "itemAndSourceIDsStable": true,
+    "objectLinksRetained": true,
+    "oldLibraryItemsAfterBackup": 9,
+    "restoredLibraryItemsBeforeNewImport": 6,
+    "restoredLibraryItemsAfterNewImport": 7,
+    "sqliteIntegrity": "ok-both-trial-libraries"
+  },
+  "unverified": [
+    "independent macOS account",
+    "another Mac",
+    "Developer ID signing",
+    "notarization and stapling",
+    "quarantined download installation",
+    "Intel Mac"
+  ],
+  "functionalBlockersFound": [],
+  "testedMacOS": "26.6.2"
+}
