@@ -155,6 +155,7 @@ final class AssistantController: ObservableObject {
 
     func stop() {
         running?.cancel()
+        if canRevealPanel { library.cancelFolderCount() }
         if canRevealPanel, let panel = NSApp.windows.first(where: { $0.identifier?.rawValue == "library" })?.attachedSheet as? NSOpenPanel {
             panel.cancel(nil)
         }
@@ -502,7 +503,9 @@ final class AssistantController: ObservableObject {
         switch operation {
         case "choose":
             guard let work = library.addFolders(fromAssistant: true) else { return result("已取消选择文件夹", cancelled: true) }
-            guard await work.value else { return result("已取消选择文件夹", cancelled: true) }
+            let accepted = await work.value
+            try checkError()
+            guard accepted else { return result("已取消选择或统计后暂不添加文件夹", cancelled: true) }
             waitingForPanel = false; canRevealPanel = false
             status = "正在只读扫描文件元数据…"
             if let index = lines.firstIndex(where: { $0.id == currentOperationID }) { lines[index].detail = "只读扫描，原文件保持不变" }
@@ -526,7 +529,9 @@ final class AssistantController: ObservableObject {
         case "reauthorize":
             guard let source else { throw AssistantError.message("请先选择一个已有来源。") }
             guard let work = library.addFolders(replacing: source, fromAssistant: true) else { return result("已取消重新授权", cancelled: true) }
-            guard await work.value else { return result("已取消选择文件夹", cancelled: true) }
+            let accepted = await work.value
+            try checkError()
+            guard accepted else { return result("已取消选择或统计后暂不重新授权", cancelled: true) }
             waitingForPanel = false; canRevealPanel = false
             status = "正在只读扫描文件元数据…"
             if let index = lines.firstIndex(where: { $0.id == currentOperationID }) { lines[index].detail = "只读扫描，原文件保持不变" }

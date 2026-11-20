@@ -92,6 +92,7 @@ struct LibraryView: View {
             .navigationSplitViewColumnWidth(min: 180, ideal: 210, max: 280)
         } detail: {
             VStack(spacing: 0) {
+                FolderCountingBanner()
                 if model.isImporting || model.importMessage != nil {
                     VStack(alignment: .leading, spacing: 8) {
                         HStack {

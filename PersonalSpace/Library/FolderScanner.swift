@@ -62,6 +62,14 @@ struct FolderScanReport: Codable, Sendable {
 // Directory-descriptor validation and bulk enumeration follow Oil Find (MIT).
 // The adapted decoder and its license are in NativeScan/ and THIRD_PARTY_NOTICES.md.
 struct FolderScanner {
+    /// The same visibility/access rules as indexing, without file records or database writes.
+    static func count(root: URL, exclusions: FolderScanExclusions = FolderScanExclusions(),
+                      preferBulkMetadata: Bool = true,
+                      progress: @escaping @Sendable (Int) -> Void = { _ in }) throws -> FolderScanReport {
+        try read(root: root, sourceID: "", database: nil, exclusions: exclusions,
+                 scope: nil, preferBulkMetadata: preferBulkMetadata, progress: progress)
+    }
+
     @discardableResult
     static func scan(root: URL, sourceID: String, database: LibraryDatabase,
                      exclusions suppliedExclusions: FolderScanExclusions? = nil,

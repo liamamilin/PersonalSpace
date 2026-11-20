@@ -64,6 +64,10 @@ final class LibraryModel: ObservableObject {
     @Published var ascending = true
     @Published var limit = 500
     @Published var scanning: [String: Int] = [:]
+    @Published private(set) var countingFolderName: String?
+    @Published private(set) var countedFiles = 0
+    private var folderCountTask: Task<FolderScanReport, Error>?
+    private var folderCountToken: UUID?
     @Published private(set) var updatingSourceIDs: Set<String> = []
     @Published private(set) var monitoredSourceIDs: Set<String> = []
     @Published private(set) var monitoringErrors: [String: String] = [:]
@@ -204,6 +208,7 @@ final class LibraryModel: ObservableObject {
         }
         for task in sourceDebounces.values { task.cancel() }
         for task in scanTasks.values { task.cancel() }
+        folderCountTask?.cancel()
     }
 
     private func startMonitoring(_ source: FolderSource) async {
@@ -336,11 +341,15 @@ final class LibraryModel: ObservableObject {
     @discardableResult
     func addFolders(replacing source: FolderSource? = nil, fromAssistant: Bool = false) -> Task<Bool, Never>? {
         guard database != nil else { return nil }
+        guard countingFolderName == nil else {
+            errorMessage = "正在统计文件数量，请先完成或取消当前统计。"
+            return nil
+        }
         let panel = NSOpenPanel()
         panel.title = source == nil ? "添加资料来源" : "重新授权来源"
-        panel.message = source == nil ? "选择你希望搜索和整理的文件夹。原文件保留在原位置。" :
+        panel.message = source == nil ? "先轻量统计文件数量，核对后再建立索引。原文件保留在原位置。" :
             (source?.needsAuthorization == true ? "请选择与此来源对应的文件夹；新电脑上的路径可以不同，将保留原资料关联。" : "请重新选择原来的文件夹，恢复访问权限。")
-        panel.prompt = source == nil ? "添加文件夹" : "重新授权"
+        panel.prompt = source == nil ? "统计文件" : "重新授权"
         panel.canChooseFiles = false
         panel.canChooseDirectories = true
         panel.allowsMultipleSelection = source == nil
@@ -372,6 +381,36 @@ final class LibraryModel: ObservableObject {
         }
     }
 
+    /// Counts an already-authorized location; no source or item is saved here.
+    func countFolder(_ url: URL) async throws -> FolderScanReport {
+        guard folderCountTask == nil else { throw AccessError.countInProgress }
+        let token = UUID()
+        folderCountToken = token
+        countingFolderName = url.lastPathComponent
+        countedFiles = 0
+        let exclusions = scanExclusions
+        let worker = Task.detached(priority: .utility) { [weak self] in
+            try FolderScanner.count(root: url, exclusions: exclusions) { [weak self] count in
+                Task { @MainActor [weak self] in
+                    guard self?.folderCountToken == token else { return }
+                    self?.countedFiles = count
+                }
+            }
+        }
+        folderCountTask = worker
+        defer {
+            folderCountTask = nil
+            folderCountToken = nil
+            countingFolderName = nil
+        }
+        return try await withTaskCancellationHandler {
+            let report = try await worker.value
+            try Task.checkCancellation()
+            return report
+        } onCancel: { worker.cancel() }
+    }
+
+    func cancelFolderCount() { folderCountTask?.cancel() }
 
     func chooseImportFiles() {
         guard !storageUnavailable, !isImporting else { return }
@@ -477,6 +516,17 @@ final class LibraryModel: ObservableObject {
             else { existing = try await database.findSource(path: canonicalPath) }
             let id = existing?.id ?? UUID().uuidString
             guard scanning[id] == nil else { return false }
+            let report = try await countFolder(url)
+            try Task.checkCancellation()
+            let alert = NSAlert()
+            alert.messageText = "「\(url.lastPathComponent)」统计完成"
+            alert.informativeText = "可读取范围内共有 \(report.fileCount.formatted()) 个文件。\n"
+                + (report.issues.isEmpty ? "" : "\(report.issues.count.formatted()) 个位置未能完整读取，未读取的内容不计入总数。\n")
+                + "已跳过隐藏文件、目录包和符号链接；尚未建立索引。\n是否继续建立索引？文件夹之后有变化时，实际入库数量可能不同。"
+            alert.addButton(withTitle: "建立索引")
+            alert.addButton(withTitle: "暂不添加")
+            guard alert.runModal() == .alertFirstButtonReturn else { return false }
+            try Task.checkCancellation()
             let bookmark = try FolderAccess.bookmark(for: url)
             if source != nil {
                 try await database.reauthorizeSource(id: id, name: url.lastPathComponent, path: canonicalPath, bookmark: bookmark)

@@ -46,6 +46,83 @@ final class LibraryTests: XCTestCase {
         try await database.saveSource(id: id, name: url.lastPathComponent, path: url.path, bookmark: Data([1]))
     }
 
+    func testLightweightCountMatchesScannerRulesAndDoesNotCreateSourceOrIndex() async throws {
+        let root = try workspace()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let a = try folder("A", in: root)
+        let nested = try folder("中文 子目录", in: a)
+        for index in 0..<1100 {
+            FileManager.default.createFile(atPath: nested.appendingPathComponent("合成-\(index).txt").path, contents: Data())
+        }
+        let original = a.appendingPathComponent("订单.txt")
+        try Data("unchanged".utf8).write(to: original)
+        for skipped in [".hidden", "Bundle.app", "Excluded"] {
+            let directory = try folder(skipped, in: a)
+            try Data().write(to: directory.appendingPathComponent("skip.txt"))
+        }
+        let hidden = a.appendingPathComponent("finder-hidden.txt")
+        try Data().write(to: hidden)
+        var hiddenURL = hidden
+        var hiddenValues = URLResourceValues(); hiddenValues.isHidden = true
+        try hiddenURL.setResourceValues(hiddenValues)
+        let outside = try folder("Outside", in: root)
+        try Data().write(to: outside.appendingPathComponent("private.txt"))
+        try FileManager.default.createSymbolicLink(at: a.appendingPathComponent("link"), withDestinationURL: outside)
+        let database = try LibraryDatabase(path: ":memory:")
+        let model = LibraryModel(database: database)
+        let modelReport = try await model.countFolder(a)
+        XCTAssertEqual(modelReport.fileCount, 1102)
+        XCTAssertNil(model.countingFolderName)
+        let emptySources = try await database.sources()
+        XCTAssertTrue(emptySources.isEmpty, "Counting must not create a source or start indexing")
+        let exclusions = FolderScanExclusions(directories: [a.appendingPathComponent("Excluded")])
+        for bulk in [true, false] {
+            let count = try FolderScanner.count(root: a, exclusions: exclusions, preferBulkMetadata: bulk)
+            XCTAssertEqual(count.fileCount, 1101)
+            XCTAssertTrue(count.issues.isEmpty)
+        }
+        try await source("a", url: a, database: database)
+        let scan = try FolderScanner.scan(root: a, sourceID: "a", database: database, exclusions: exclusions)
+        XCTAssertEqual(scan.fileCount, 1101)
+        XCTAssertEqual(try Data(contentsOf: original), Data("unchanged".utf8))
+    }
+
+    func testCancelledOrFailedCountLeavesOldRecordsAndModelReadyForRetry() async throws {
+        let root = try workspace()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let database = try LibraryDatabase(path: ":memory:")
+        try await source("a", url: root, database: database)
+        try database.saveBatch([ScannedFile(relativePath: "history.txt", name: "history.txt",
+            typeIdentifier: "public.text", bytes: 7)], sourceID: "a", scanID: "before")
+        let before = try await database.files(FileQuery()).files
+        let model = LibraryModel(database: database)
+        let task = Task { try await model.countFolder(root) }
+        task.cancel()
+        do { _ = try await task.value; XCTFail("Cancelled count must not return a completed result") }
+        catch is CancellationError { }
+        XCTAssertNil(model.countingFolderName)
+        do { _ = try await model.countFolder(root.appendingPathComponent("missing")); XCTFail("Missing root must fail") }
+        catch { }
+        XCTAssertNil(model.countingFolderName)
+        let report = try await model.countFolder(root)
+        XCTAssertEqual(report.fileCount, 0)
+        let after = try await database.files(FileQuery()).files
+        XCTAssertEqual(before, after, "Counting and cancelling must not invalidate historical records")
+    }
+
+    func testCountReportsUnreadableLocationsInsteadOfClaimingWholeFolderTotal() throws {
+        let root = try workspace()
+        defer { try? FileManager.default.removeItem(at: root) }
+        try Data().write(to: root.appendingPathComponent("readable.txt"))
+        let restricted = try folder("Restricted", in: root)
+        try Data().write(to: restricted.appendingPathComponent("not-counted.txt"))
+        XCTAssertEqual(chmod(restricted.path, 0), 0)
+        defer { chmod(restricted.path, 0o700) }
+        let report = try FolderScanner.count(root: root)
+        XCTAssertEqual(report.fileCount, 1)
+        XCTAssertEqual(report.unreadable.map(\.path), ["Restricted"])
+    }
+
     func testConcurrentReloadsCoalesceDatabaseWorkAndKeepSearchResults() async throws {
         let database = try LibraryDatabase(path: ":memory:")
         try await source("synthetic", url: URL(fileURLWithPath: "/synthetic"), database: database)

@@ -19,6 +19,7 @@ struct SourcesView: View {
             if let message = model.errorMessage {
                 Label(message, systemImage: "exclamationmark.triangle").foregroundStyle(.orange)
             }
+            FolderCountingBanner()
             if model.sources.isEmpty {
                 ContentUnavailableView("尚未添加来源", systemImage: "folder",
                     description: Text("选择你希望在资料库中查找的文件夹。"))
@@ -96,6 +97,27 @@ struct SourcesView: View {
         .padding(24)
         .frame(width: 640, height: 440)
         .modifier(SourceRemovalConfirmation(source: $removing))
+    }
+}
+
+struct FolderCountingBanner: View {
+    @EnvironmentObject private var model: LibraryModel
+
+    var body: some View {
+        if let name = model.countingFolderName {
+            HStack(spacing: 12) {
+                ProgressView().controlSize(.small)
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("正在统计「\(name)」· 已计数 \(model.countedFiles.formatted()) 个文件")
+                    Text("仅统计可读取的文件，不读取正文、不建立索引。大文件夹需要等待。")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                Spacer()
+                Button("取消统计") { model.cancelFolderCount() }
+            }
+            .font(.callout).padding(12).frame(maxWidth: .infinity, alignment: .leading)
+            .background(.quaternary.opacity(0.5))
+        }
     }
 }
 
