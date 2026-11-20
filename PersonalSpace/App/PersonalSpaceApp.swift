@@ -5,7 +5,11 @@ struct PersonalSpaceApp: App {
     @StateObject private var model: LibraryModel
     @StateObject private var assistant: AssistantController
     init() {
-        let library = LibraryModel()
+        // Hosted unit tests use isolated storage and must not open the user's
+        // active library just because XCTest restores an application window.
+        let library = NSClassFromString("XCTestCase") == nil
+            ? LibraryModel()
+            : LibraryModel(database: try! LibraryDatabase(path: ":memory:"))
         _model = StateObject(wrappedValue: library)
         _assistant = StateObject(wrappedValue: AssistantController(library: library))
     }
@@ -45,7 +49,10 @@ struct LibraryCommands: Commands {
                 .disabled(model.storageUnavailable)
         }
         CommandGroup(after: .textEditing) {
-            Button("搜索资料") { model.searchFocusRequest += 1 }.keyboardShortcut("f")
+            Button("搜索资料") {
+                openWindow(id: "library")
+                model.searchFocusRequest += 1
+            }.keyboardShortcut("f")
             Button("打开 AI 助手") { openWindow(id: "assistant") }
                 .keyboardShortcut("a", modifiers: [.command, .option])
         }

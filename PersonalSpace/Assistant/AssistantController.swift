@@ -301,7 +301,8 @@ final class AssistantController: ObservableObject {
                 "selected_file_id": library.selectedFileID.map(AssistantJSON.string) ?? .null,
                 "selected_object_id": (library.currentObjectID ?? library.selectedObjectID).map(AssistantJSON.string) ?? .null,
                 "sources": .array(sources.map { .object(["id": .string($0.id), "name": .string($0.name),
-                    "needs_authorization": .bool($0.needsAuthorization), "scanning": .bool(library.scanning[$0.id] != nil)]) })]))
+                    "needs_authorization": .bool($0.needsAuthorization), "auto_update_paused": .bool($0.autoUpdatePaused), "unreadable_locations": .number(Double($0.scanReport?.unreadable.count ?? 0)),
+                    "scanning": .bool(library.scanning[$0.id] != nil)]) })]))
         case "search_library": return try await search(args)
         case "inspect_file":
             let item = try await file(required(args, "item_id"))
@@ -407,7 +408,7 @@ final class AssistantController: ObservableObject {
                 "date_confirmed": .bool($0.dateConfirmed), "actual_system_pending_at": .date(library.pendingReminderDates[$0.id])]) }
         case "sources":
             let found = try await db.sources().filter { query.isEmpty || $0.name.localizedCaseInsensitiveContains(query) }; total = found.count
-            values = found.dropFirst(offset).prefix(limit).map { .object(["id": .string($0.id), "name": .string($0.name), "path": .string($0.path), "files": .number(Double($0.fileCount)), "needs_authorization": .bool($0.needsAuthorization), "error": $0.lastError.map(AssistantJSON.string) ?? .null]) }
+            values = found.dropFirst(offset).prefix(limit).map { .object(["id": .string($0.id), "name": .string($0.name), "path": .string($0.path), "files": .number(Double($0.fileCount)), "needs_authorization": .bool($0.needsAuthorization), "auto_update_paused": .bool($0.autoUpdatePaused), "unreadable_locations": .number(Double($0.scanReport?.unreadable.count ?? 0)), "error": $0.lastError.map(AssistantJSON.string) ?? .null]) }
         default: throw AssistantError.message("不支持的查询范围。")
         }
         return result("已查询到 \(total) 条结果，本次返回 \(values.count) 条", .object(["total": .number(Double(total)), "offset": .number(Double(offset)), "results": .array(values)]))
@@ -518,6 +519,10 @@ final class AssistantController: ObservableObject {
             await library.waitForScans(chosen.map(\.id))
         case "stop":
             for s in source.map({ [$0] }) ?? sources { library.cancelScan(s) }
+        case "resume":
+            let chosen = source.map { [$0] } ?? sources
+            for s in chosen { await library.resumeAutomaticUpdates(s) }
+            await library.waitForScans(chosen.map(\.id))
         case "reauthorize":
             guard let source else { throw AssistantError.message("请先选择一个已有来源。") }
             guard let work = library.addFolders(replacing: source, fromAssistant: true) else { return result("已取消重新授权", cancelled: true) }
@@ -541,8 +546,8 @@ final class AssistantController: ObservableObject {
         try checkError()
         try Task.checkCancellation()
         let after = try await db.sources()
-        let summary = after.prefix(6).map { "\($0.name)：\($0.fileCount) 份" + ($0.lastError == nil ? "" : "（需要检查访问）") }.joined(separator: "，")
-        return result("来源操作已结束" + (summary.isEmpty ? "" : " · " + summary), .object(["sources": .array(after.map { .object(["id": .string($0.id), "name": .string($0.name), "files": .number(Double($0.fileCount)), "error": $0.lastError.map(AssistantJSON.string) ?? .null, "needs_authorization": .bool($0.needsAuthorization)]) })]))
+        let summary = after.prefix(6).map { "\($0.name)：\($0.fileCount) 份" + ($0.lastError == nil ? (($0.scanReport?.unreadable.count ?? 0) == 0 ? "" : "（扫描结束，\($0.scanReport?.unreadable.count ?? 0) 处未能读取）") : "（需要检查访问）") }.joined(separator: "，")
+        return result("来源操作已结束" + (summary.isEmpty ? "" : " · " + summary), .object(["sources": .array(after.map { .object(["id": .string($0.id), "name": .string($0.name), "files": .number(Double($0.fileCount)), "error": $0.lastError.map(AssistantJSON.string) ?? .null, "needs_authorization": .bool($0.needsAuthorization), "auto_update_paused": .bool($0.autoUpdatePaused), "unreadable_locations": .number(Double($0.scanReport?.unreadable.count ?? 0))]) })]))
     }
 
     private func operateObject(_ a: AssistantJSON) async throws -> AssistantToolResult {

@@ -1,13 +1,17 @@
 // Compile after a normal Debug app build (no user library or sandbox DB is used):
 // mkdir -p .build/benchmark evidence/M6
+// xcrun clang -O2 -c PersonalSpace/Library/NativeScan/BulkDirectoryReader.c \
+//   -o .build/benchmark/BulkDirectoryReader.o
 // xcrun swiftc -O -parse-as-library -swift-version 6 -target arm64-apple-macosx26.0 \
+//   -import-objc-header PersonalSpace/Library/NativeScan/ScanBridge.h \
 //   -I .build/DerivedData/Build/Products/Debug \
 //   -I .build/SourcePackages/checkouts/GRDB.swift/Sources/GRDBSQLite \
 //   scripts/benchmark_scan.swift PersonalSpace/Data/Records.swift \
 //   PersonalSpace/Data/LibraryDatabase.swift PersonalSpace/Library/FolderScanner.swift \
 //   PersonalSpace/Library/FolderAccess.swift PersonalSpace/ManagedFiles/ManagedFileStore.swift \
 //   PersonalSpace/Documents/DocumentTextExtractor.swift \
-//   .build/DerivedData/Build/Products/Debug/GRDB.o -lsqlite3 -o .build/benchmark/benchmark_scan
+//   .build/DerivedData/Build/Products/Debug/GRDB.o .build/benchmark/BulkDirectoryReader.o \
+//   -lsqlite3 -o .build/benchmark/benchmark_scan
 // .build/benchmark/benchmark_scan > evidence/M6/benchmark.txt
 import CryptoKit
 import Darwin

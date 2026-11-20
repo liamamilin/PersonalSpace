@@ -11,6 +11,11 @@ struct FolderSource: Decodable, FetchableRecord, Identifiable, Sendable {
     var lastError: String?
     var fileCount: Int
     var needsAuthorization = false
+    var autoUpdatePaused = false
+    var scanReportJSON: String? = nil
+    var scanReport: FolderScanReport? {
+        scanReportJSON.flatMap { $0.data(using: .utf8) }.flatMap { try? JSONDecoder().decode(FolderScanReport.self, from: $0) }
+    }
 }
 
 struct PersonalObject: Decodable, FetchableRecord, Identifiable, Sendable, Equatable {
@@ -178,7 +183,7 @@ enum FileSort: String, CaseIterable, Identifiable, Sendable {
     }
 }
 
-struct FileQuery: Sendable {
+struct FileQuery: Sendable, Equatable {
     var search = ""
     var sourceID: String?
     var objectID: String? = nil

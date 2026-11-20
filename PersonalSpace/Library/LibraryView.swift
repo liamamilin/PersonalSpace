@@ -10,6 +10,7 @@ struct LibraryView: View {
     @State private var compactWindow = false
     @State private var showCompactInspector = false
     @State private var dropTargeted = false
+    @State private var removingSource: FolderSource?
     @State private var sortOrder = [KeyPathComparator(\LibraryFile.name)]
     @FocusState private var searchFocused: Bool
 
@@ -73,6 +74,8 @@ struct LibraryView: View {
                                 Button("刷新来源") { model.refresh(source) }.disabled(source.needsAuthorization || model.scanning[source.id] != nil)
                                 Button("重新授权") { model.addFolders(replacing: source) }
                                     .disabled(model.scanning[source.id] != nil)
+                                Divider()
+                                Button("移除来源…", role: .destructive) { removingSource = source }
                             }
                         }
                         Button("添加文件夹", systemImage: "folder.badge.plus") { model.addFolders() }
@@ -175,7 +178,12 @@ struct LibraryView: View {
                 HStack(spacing: 8) {
                     if model.isScanning {
                         ProgressView().controlSize(.mini)
-                        Text("扫描中 · 已发现 \(model.scanning.values.reduce(0, +)) 个文件")
+                        Text(model.scanning.keys.allSatisfy { model.updatingSourceIDs.contains($0) }
+                             ? "更新中 · 已处理 \(model.scanning.values.reduce(0, +)) 个文件"
+                             : "扫描中 · 已发现 \(model.scanning.values.reduce(0, +)) 个文件")
+                    } else if model.isFileList && model.isQueryLoading {
+                        ProgressView().controlSize(.mini)
+                        Text("正在查询资料…")
                     } else {
                         Text(model.isObjectsList ? "\(model.objects.count) 个个人对象" : model.isMattersList ? "共 \(model.matters.count) 个事务" : model.isActionsList ? "\(model.actions.count) 项行动" : (model.search.isEmpty ? "\(model.total) 份资料" : "\(model.total) 条搜索结果"))
                         if model.isFileList && model.selectedFile != nil { Text("· 已选择 1 份") }
@@ -249,6 +257,7 @@ struct LibraryView: View {
             }
         }
         .frame(minWidth: 720, minHeight: 500)
+        .modifier(SourceRemovalConfirmation(source: $removingSource))
         .popover(isPresented: $showCompactInspector) {
             inspectorContent.frame(width: 360, height: 540)
         }
@@ -275,7 +284,9 @@ struct LibraryView: View {
             do { try await Task.sleep(for: .milliseconds(120)) } catch { return }
             await model.reload()
         }
-        .onChange(of: model.searchFocusRequest) { searchFocused = true }
+        .onChange(of: model.searchFocusRequest, initial: true) {
+            if model.searchFocusRequest > 0 { searchFocused = true }
+        }
         .onChange(of: model.inspectorToggleRequest) { toggleInspector() }
         .onChange(of: showInspector && !compactWindow && hasInspectorContent, initial: true) { _, wanted in
             inspectorPresented = wanted
@@ -355,7 +366,18 @@ struct LibraryView: View {
     }
 
     @ViewBuilder private var content: some View {
-        if model.isInbox && model.files.isEmpty {
+        if model.isQueryLoading {
+            ProgressView("正在查询资料…")
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else if let error = model.queryLoadError {
+            ContentUnavailableView {
+                Label("读取资料失败", systemImage: "exclamationmark.triangle")
+            } description: {
+                Text(error)
+            } actions: {
+                Button("重试查询") { Task { await model.reload() } }
+            }.frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else if model.isInbox && model.files.isEmpty {
             ContentUnavailableView {
                 Label(model.search.isEmpty ? "收纳文件，稍后整理" : "没有找到待整理资料", systemImage: "tray.and.arrow.down")
             } description: {

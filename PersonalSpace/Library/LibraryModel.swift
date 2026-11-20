@@ -1,6 +1,7 @@
 import AppKit
 import SwiftUI
 import UniformTypeIdentifiers
+import GRDB
 
 @MainActor
 final class LibraryModel: ObservableObject {
@@ -52,6 +53,8 @@ final class LibraryModel: ObservableObject {
     @Published var sources: [FolderSource] = []
     @Published var files: [LibraryFile] = []
     @Published var total = 0
+    @Published private(set) var finishedQuery: FileQuery?
+    @Published private(set) var queryLoadError: String?
     @Published var search = ""
     @Published var searchBody = false
     @Published var indexingID: String?
@@ -61,6 +64,7 @@ final class LibraryModel: ObservableObject {
     @Published var ascending = true
     @Published var limit = 500
     @Published var scanning: [String: Int] = [:]
+    @Published private(set) var updatingSourceIDs: Set<String> = []
     @Published private(set) var monitoredSourceIDs: Set<String> = []
     @Published private(set) var monitoringErrors: [String: String] = [:]
     @Published var errorMessage: String?
@@ -88,12 +92,22 @@ final class LibraryModel: ObservableObject {
     private var sourceDebounces: [String: Task<Void, Never>] = [:]
     private var sourceChangeStartedAt: [String: ContinuousClock.Instant] = [:]
     private var refreshAfterScan: Set<String> = []
+    private var changedSourcePaths: [String: Set<String>] = [:]
+    private var scanListReloads: [String: ContinuousClock.Instant] = [:]
+    private var scanTokens: [String: UUID] = [:]
     private var started = false
     private var managedStore: ManagedFileStore?
     private var previewRoot: URL?
-    private var queryGeneration = 0
+    private var reloadTask: Task<Void, Never>?
+    private var requestedReload = 0
+    private var completedReload = 0
+    private var scanExclusions: FolderScanExclusions {
+        FolderScanExclusions(databasePath: database?.queue.path,
+            directories: librarySelection.map { [$0.base] } ?? [])
+    }
 
     var selectedFile: LibraryFile? { files.first { $0.id == selectedFileID } }
+    var isQueryLoading: Bool { !storageUnavailable && finishedQuery != query }
     var selectedMatter: MatterRecord? { matters.first { $0.id == selectedMatterID } }
     var isMattersList: Bool { selectedSourceID == "matters" }
     var isActionsList: Bool { selectedSourceID == "actions" }
@@ -176,6 +190,7 @@ final class LibraryModel: ObservableObject {
                     monitoringErrors[source.id] = "需要重新授权后才能自动更新。"
                     continue
                 }
+                guard !source.autoUpdatePaused else { continue }
                 await startMonitoring(source)
                 refresh(source)
             }
@@ -192,12 +207,12 @@ final class LibraryModel: ObservableObject {
     }
 
     private func startMonitoring(_ source: FolderSource) async {
-        guard folderWatchers[source.id] == nil else { return }
+        guard !source.autoUpdatePaused, folderWatchers[source.id] == nil else { return }
         do {
             let access = try FolderAccess.resolve(source)
             do {
-                let watcher = try FolderWatcher(root: access.url) { [weak self] in
-                    self?.sourceChanged(source)
+                let watcher = try FolderWatcher(root: access.url, exclusions: scanExclusions) { [weak self] paths in
+                    self?.sourceChanged(source, paths: paths)
                 }
                 if let bookmark = access.renewedBookmark, let database {
                     try await database.saveSource(id: source.id, name: access.url.lastPathComponent,
@@ -219,6 +234,7 @@ final class LibraryModel: ObservableObject {
         sourceDebounces.removeValue(forKey: id)?.cancel()
         sourceChangeStartedAt[id] = nil
         refreshAfterScan.remove(id)
+        changedSourcePaths[id] = nil
         if let watch = folderWatchers.removeValue(forKey: id) {
             watch.watcher.stop()
             watch.root.stopAccessingSecurityScopedResource()
@@ -227,9 +243,11 @@ final class LibraryModel: ObservableObject {
         monitoringErrors[id] = nil
     }
 
-    private func sourceChanged(_ source: FolderSource) {
+    private func sourceChanged(_ source: FolderSource, paths: [String]?) {
         let id = source.id
         guard folderWatchers[id] != nil else { return }
+        if let paths { changedSourcePaths[id, default: []].formUnion(paths) }
+        else { refreshAfterScan.insert(id) }
         let now = ContinuousClock.now
         let firstChange = sourceChangeStartedAt[id] ?? now
         sourceChangeStartedAt[id] = firstChange
@@ -243,15 +261,49 @@ final class LibraryModel: ObservableObject {
             self.sourceDebounces[id] = nil
             self.sourceChangeStartedAt[id] = nil
             guard self.folderWatchers[id] != nil else { return }
-            self.refresh(source)
+            self.flushSourceChanges(source)
+        }
+    }
+
+    private func flushSourceChanges(_ source: FolderSource) {
+        guard scanTasks[source.id] == nil else { return }
+        if refreshAfterScan.remove(source.id) != nil {
+            changedSourcePaths[source.id] = nil
+            refresh(source)
+        } else if let paths = changedSourcePaths.removeValue(forKey: source.id), !paths.isEmpty {
+            // When a directory changed, one subtree walk also covers its child events.
+            let sorted = paths.sorted()
+            var scopes: [String] = []
+            for path in sorted where !scopes.contains(where: { path.hasPrefix($0 + "/") }) { scopes.append(path) }
+            scan(source, changedPaths: scopes)
         }
     }
 
     func reload() async {
+        guard database != nil, !Task.isCancelled else { return }
+        requestedReload += 1
+        let revision = requestedReload
+        // Callers wait for a read begun after their request. Concurrent callers
+        // share the current read and a follow-up instead of invalidating it.
+        while completedReload < revision, !Task.isCancelled {
+            if let reloadTask {
+                await reloadTask.value
+            } else {
+                let target = requestedReload
+                let request = query
+                let task = Task { [self] in
+                    await readLibrary(request)
+                    completedReload = target
+                    reloadTask = nil
+                }
+                reloadTask = task
+                await task.value
+            }
+        }
+    }
+
+    private func readLibrary(_ request: FileQuery) async {
         guard let database else { return }
-        queryGeneration += 1
-        let generation = queryGeneration
-        let request = query
         do {
             let newSources = try await database.sources()
             let newObjects = try await database.objects()
@@ -259,7 +311,7 @@ final class LibraryModel: ObservableObject {
             let newActions = try await database.actions()
             let result = try await database.files(request)
             let pendingCount = try await database.files(FileQuery(inboxOnly: true, limit: 0)).total
-            guard generation == queryGeneration, !Task.isCancelled else { return }
+            guard request == query else { return }
             sources = newSources
             objects = newObjects
             matters = newMatters
@@ -267,14 +319,17 @@ final class LibraryModel: ObservableObject {
             files = result.files
             total = result.total
             inboxCount = pendingCount
+            queryLoadError = nil
+            finishedQuery = request
             if let id = selectedFileID, !files.contains(where: { $0.id == id }) {
                 selectedFileID = nil
             }
             if selectedMatterID != nil { await loadMatterDetails() }
         } catch {
-            // A SwiftUI search/navigation task may be superseded during an async GRDB read.
-            guard generation == queryGeneration, !Task.isCancelled else { return }
-            errorMessage = "读取资料库失败，请重试。"
+            guard request == query else { return }
+            queryLoadError = "读取资料库失败，请重试。"
+            finishedQuery = request
+            errorMessage = queryLoadError
         }
     }
 
@@ -283,7 +338,7 @@ final class LibraryModel: ObservableObject {
         guard database != nil else { return nil }
         let panel = NSOpenPanel()
         panel.title = source == nil ? "添加资料来源" : "重新授权来源"
-        panel.message = source == nil ? "文件保留在原位置，PersonalSpace 仅建立本地索引。" :
+        panel.message = source == nil ? "选择你希望搜索和整理的文件夹。原文件保留在原位置。" :
             (source?.needsAuthorization == true ? "请选择与此来源对应的文件夹；新电脑上的路径可以不同，将保留原资料关联。" : "请重新选择原来的文件夹，恢复访问权限。")
         panel.prompt = source == nil ? "添加文件夹" : "重新授权"
         panel.canChooseFiles = false
@@ -297,17 +352,26 @@ final class LibraryModel: ObservableObject {
                     panel.beginSheetModal(for: owner) { continuation.resume(returning: $0) }
                 }
                 guard response == .OK else { return false }
-                for url in panel.urls { await saveFolder(url, replacing: source) }
-                return true
+                var saved = false
+                for url in panel.urls {
+                    guard await saveFolder(url, replacing: source) else { return saved }
+                    saved = true
+                }
+                return saved
             }
         }
         guard panel.runModal() == .OK else { return nil }
         let urls = panel.urls
         return Task {
-            for url in urls { await saveFolder(url, replacing: source) }
-            return true
+            var saved = false
+            for url in urls {
+                guard await saveFolder(url, replacing: source) else { return saved }
+                saved = true
+            }
+            return saved
         }
     }
+
 
     func chooseImportFiles() {
         guard !storageUnavailable, !isImporting else { return }
@@ -395,8 +459,8 @@ final class LibraryModel: ObservableObject {
         for id in ids { await scanTasks[id]?.value }
     }
 
-    private func saveFolder(_ url: URL, replacing source: FolderSource?) async {
-        guard let database else { return }
+    private func saveFolder(_ url: URL, replacing source: FolderSource?) async -> Bool {
+        guard let database else { return false }
         let accessing = url.startAccessingSecurityScopedResource()
         defer { if accessing { url.stopAccessingSecurityScopedResource() } }
         do {
@@ -406,26 +470,33 @@ final class LibraryModel: ObservableObject {
             if let source, !source.needsAuthorization,
                canonicalPath != URL(fileURLWithPath: source.path).resolvingSymlinksInPath().path {
                 errorMessage = "请重新选择原来源文件夹。添加其它位置请使用「添加文件夹」。"
-                return
+                return false
             }
             let existing: FolderSource?
             if let source { existing = source }
             else { existing = try await database.findSource(path: canonicalPath) }
             let id = existing?.id ?? UUID().uuidString
-            guard scanning[id] == nil else { return }
+            guard scanning[id] == nil else { return false }
             let bookmark = try FolderAccess.bookmark(for: url)
             if source != nil {
                 try await database.reauthorizeSource(id: id, name: url.lastPathComponent, path: canonicalPath, bookmark: bookmark)
             } else {
                 try await database.saveSource(id: id, name: url.lastPathComponent, path: canonicalPath, bookmark: bookmark)
             }
+            try database.setSourceAutoUpdatePaused(id, paused: false)
             await reload()
             if let saved = try await database.findSource(path: canonicalPath) {
                 stopMonitoring(id)
                 await startMonitoring(saved)
                 refresh(saved)
             }
-        } catch { errorMessage = "无法保存文件夹授权。请重新选择可访问的普通文件夹。" }
+            return true
+        } catch is CancellationError {
+            return false
+        } catch {
+            errorMessage = (error as? AccessError)?.errorDescription ?? "统计或保存文件夹失败。请检查访问权限后重试。"
+            return false
+        }
     }
 
     func refreshAll() {
@@ -469,6 +540,11 @@ final class LibraryModel: ObservableObject {
     }
 
     func refresh(_ source: FolderSource) {
+        changedSourcePaths[source.id] = nil
+        scan(source, changedPaths: nil)
+    }
+
+    private func scan(_ source: FolderSource, changedPaths: [String]?) {
         guard let database else { return }
         guard !source.needsAuthorization else {
             monitoringErrors[source.id] = "需要重新授权后才能刷新。"
@@ -479,7 +555,11 @@ final class LibraryModel: ObservableObject {
             return
         }
         let selectedBeforeScan = selectedFile
+        let token = UUID()
+        scanTokens[source.id] = token
         scanning[source.id] = 0
+        if changedPaths != nil { updatingSourceIDs.insert(source.id) }
+        scanListReloads[source.id] = .now
         scanTasks[source.id] = Task { [weak self] in
             guard let self else { return }
             do {
@@ -493,14 +573,28 @@ final class LibraryModel: ObservableObject {
                     access.url.stopAccessingSecurityScopedResource()
                     throw error
                 }
+                let exclusions = self.scanExclusions
                 let worker = Task.detached(priority: .utility) { [weak self] in
                     defer { access.url.stopAccessingSecurityScopedResource() }
-                    try FolderScanner.scan(root: access.url, sourceID: source.id, database: database) { [weak self] count in
-                        Task { @MainActor [weak self] in
-                            guard let self, self.scanning[source.id] != nil else { return }
-                            self.scanning[source.id] = count
-                            await self.reload()
+                    var total = 0
+                    let scopes: [String?] = changedPaths?.map(Optional.some) ?? [nil]
+                    for scope in scopes {
+                        try Task.checkCancellation()
+                        let offset = total
+                        let report = try FolderScanner.scan(root: access.url, sourceID: source.id, database: database,
+                                               exclusions: exclusions, scope: scope) { [weak self] count in
+                            Task { @MainActor [weak self] in
+                                guard let self, self.scanTokens[source.id] == token else { return }
+                                self.scanning[source.id] = offset + count
+                                let now = ContinuousClock.now
+                                if self.reloadTask == nil,
+                                   self.scanListReloads[source.id].map({ $0.duration(to: now) >= .seconds(1) }) ?? true {
+                                    self.scanListReloads[source.id] = now
+                                    await self.reload()
+                                }
+                            }
                         }
+                        total += report.fileCount
                     }
                 }
                 try await withTaskCancellationHandler {
@@ -509,29 +603,66 @@ final class LibraryModel: ObservableObject {
             } catch is CancellationError {
                 // A partial scan never invalidates previously indexed files.
             } catch {
+                // Do not repeatedly retry a large, partially unreadable source on every event.
+                self.pauseAutomaticUpdates(source)
+                let nsError = error as NSError
+                var message = (error as? AccessError)?.errorDescription ?? "扫描中断，已有资料保留。"
+                var diagnostic: [String: String] = ["domain": nsError.domain, "code": String(nsError.code)]
+                if let sqliteError = error as? DatabaseError {
+                    message = "资料库写入失败，扫描未完成。"
+                    diagnostic["reason"] = sqliteError.message
+                    diagnostic["sqlite_code"] = String(sqliteError.extendedResultCode.rawValue)
+                }
+                if let base = self.librarySelection?.base {
+                    let directory = base.appendingPathComponent("Diagnostics")
+                    try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+                    if let data = try? JSONEncoder().encode(diagnostic) {
+                        try? data.write(to: directory.appendingPathComponent("last-scan-failure.json"), options: .atomic)
+                    }
+                }
                 do {
-                    try await database.setSourceError(source.id,
-                        message: (error as? AccessError)?.errorDescription ?? "无法访问文件夹，请重新授权后刷新。")
+                    try await database.setSourceError(source.id, message: message)
                 } catch { self.errorMessage = "扫描状态保存失败，请重试。" }
             }
             self.scanning[source.id] = nil
+            self.scanTokens[source.id] = nil
+            self.updatingSourceIDs.remove(source.id)
+            self.scanListReloads[source.id] = nil
             self.scanTasks[source.id] = nil
             await self.reload()
             if self.selectedFile?.sourceID == source.id, self.selectedFile != selectedBeforeScan {
                 self.preparePreview(preferManaged: self.previewIsManaged)
             }
-            if self.refreshAfterScan.remove(source.id) != nil,
-               let current = self.folderWatchers[source.id] != nil ? source : self.sources.first(where: { $0.id == source.id }) {
-                self.refresh(current)
+            if let current = self.sources.first(where: { $0.id == source.id }), self.folderWatchers[source.id] != nil {
+                self.flushSourceChanges(current)
             }
         }
     }
 
     func cancelScan(_ source: FolderSource) {
-        sourceDebounces.removeValue(forKey: source.id)?.cancel()
-        sourceChangeStartedAt[source.id] = nil
-        refreshAfterScan.remove(source.id)
         scanTasks[source.id]?.cancel()
+        pauseAutomaticUpdates(source)
+    }
+
+    private func pauseAutomaticUpdates(_ source: FolderSource) {
+        stopMonitoring(source.id)
+        do {
+            try database?.setSourceAutoUpdatePaused(source.id, paused: true)
+            if let index = sources.firstIndex(where: { $0.id == source.id }) {
+                sources[index].autoUpdatePaused = true
+            }
+        } catch { errorMessage = "已停止扫描，但暂停状态未保存；重开应用可能恢复自动更新。" }
+    }
+
+    func resumeAutomaticUpdates(_ source: FolderSource) async {
+        guard let database, !source.needsAuthorization, scanTasks[source.id] == nil else { return }
+        do {
+            try database.setSourceAutoUpdatePaused(source.id, paused: false)
+            await reload()
+            guard let current = sources.first(where: { $0.id == source.id }) else { return }
+            await startMonitoring(current)
+            refresh(current)
+        } catch { errorMessage = "未能恢复自动更新，请重试。" }
     }
 
     func remove(_ source: FolderSource) async {

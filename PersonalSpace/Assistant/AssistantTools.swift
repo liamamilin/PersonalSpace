@@ -48,8 +48,8 @@ enum AssistantTools {
             "item_ids": list("Real item ID"), "target": choice(["available", "original", "managed"]),
             "sensitivity": choice(["normal", "suspected", "sensitive"])], ["operation", "item_ids"]),
         tool("choose_files_and_import", "Open the system file picker, then copy user-selected files into inbox. User chooses actual files; do not invent paths."),
-        tool("source_operation", "Choose folders in the system panel, refresh authorized folders, stop scans, reauthorize or remove a source. Scan is read-only, excludes hidden/package/symlink files. User must choose a folder before accessing a new location.", [
-            "operation": choice(["choose", "refresh", "stop", "reauthorize", "remove"]), "source_id": text("Existing source ID; omit refresh to refresh all")], ["operation"]),
+        tool("source_operation", "Choose folders in the system panel, refresh authorized folders once, stop scans and persistently pause automatic updates, resume automatic updates, reauthorize or remove a source. Refresh alone does not resume paused automatic updates. Scan is read-only, excludes hidden/package/symlink files and app storage. User must choose a folder before accessing a new location.", [
+            "operation": choice(["choose", "refresh", "stop", "resume", "reauthorize", "remove"]), "source_id": text("Existing source ID; omit refresh/stop/resume to apply to all")], ["operation"]),
         tool("object_operation", "Create/update a personal object, show it, link/unlink existing files. Existing properties are preserved if omitted. Objects can be device or other. Creation and links are saved, originals unchanged.", [
             "operation": choice(["create", "update", "show", "link", "unlink"]), "object_id": text("Existing object ID except create"),
             "name": text("Object name"), "kind": choice(["device", "other"]), "notes": text("Notes"), "item_ids": list("Existing item ID")], ["operation"]),

@@ -43,12 +43,13 @@ struct FolderAccess {
 }
 
 enum AccessError: LocalizedError {
-    case authorization, missing, scan
+    case authorization, missing, scan, cloudDirectory
     var errorDescription: String? {
         switch self {
         case .authorization: "无法访问此位置，请在来源设置中重新选择此文件夹。"
         case .missing: "原位置已不可用。文件可能已被移动或移除，请刷新来源。"
         case .scan: "未能完整读取文件夹，旧文件状态已保留。请检查权限后重试。"
+        case .cloudDirectory: "目录仅在云端，尚未下载到本机。请先在 Finder 中下载后刷新。"
         }
     }
 }
