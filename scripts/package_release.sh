@@ -1,34 +1,59 @@
 #!/bin/bash
-# Build and package a local ad hoc Release app. No distribution signing,
+# Build and package a local Release app. No distribution signing,
 # notarization, Gatekeeper changes, or quarantine removal is performed.
 set -euo pipefail
 
 repository=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 skip_build=false
-if [[ "${1:-}" == "--skip-build" ]]; then
-    skip_build=true
-    shift
-elif [[ "${1:-}" == "--help" ]]; then
-    echo "Usage: scripts/package_release.sh [--skip-build]"
-    echo "Builds Release with local ad hoc signing, verifies Sandbox, then writes ZIP/SHA-256 to .build/releases/."
-    echo "--skip-build packages an already-built local ad hoc Release app."
-    exit 0
-fi
-if [[ $# -ne 0 ]]; then
-    echo "Unknown argument. Use --help." >&2
-    exit 2
-fi
+signing_identity="AI Desktop Assistant"
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --skip-build) skip_build=true; shift ;;
+        --identity)
+            if [[ $# -lt 2 || -z "$2" ]]; then
+                echo "--identity requires a certificate name or SHA-1." >&2
+                exit 2
+            fi
+            signing_identity="$2"; shift 2 ;;
+        --adhoc) signing_identity="-"; shift ;;
+        --help)
+            echo "Usage: scripts/package_release.sh [--skip-build] [--identity NAME_OR_SHA1 | --adhoc]"
+            echo "Uses the existing AI Desktop Assistant certificate by default; verifies signing and Sandbox."
+            echo "--skip-build packages an already-built app signed with the selected identity."
+            echo "--adhoc explicitly selects temporary signing; updates can ask for permissions again."
+            exit 0 ;;
+        *) echo "Unknown argument: $1. Use --help." >&2; exit 2 ;;
+    esac
+done
 cd "$repository"
 output="$repository/.build/releases"
 mkdir -p "$output"
 /usr/bin/security find-identity -v -p codesigning > "$output/signing-identities.txt" 2>&1 || true
+identity_hash="-"
+signature_description="local ad hoc"
+if [[ "$signing_identity" != "-" ]]; then
+    identity_hash=$(python3 - "$output/signing-identities.txt" "$signing_identity" <<'PY'
+import pathlib, re, sys
+matches = []
+for line in pathlib.Path(sys.argv[1]).read_text().splitlines():
+    match = re.fullmatch(r'\s*\d+\)\s+([0-9A-Fa-f]{40})\s+"(.*)"\s*', line)
+    if match and (match[1].lower() == sys.argv[2].lower() or match[2] == sys.argv[2]):
+        matches.append(match[1])
+if len(matches) != 1:
+    raise SystemExit("No unique valid identity found: " + sys.argv[2] +
+                     ". Unlock the keychain or select --identity explicitly; no temporary-signing fallback was made.")
+print(matches[0])
+PY
+)
+    signature_description="local certificate: $signing_identity ($identity_hash)"
+fi
 
 if [[ "$skip_build" != true ]]; then
     /usr/bin/xcodebuild -project PersonalSpace.xcodeproj -scheme PersonalSpace \
         -configuration Release -destination 'platform=macOS' \
         -derivedDataPath .build/DerivedData \
         -clonedSourcePackagesDirPath .build/SourcePackages \
-        'CODE_SIGN_IDENTITY=-' 'CODE_SIGN_STYLE=Manual' 'ONLY_ACTIVE_ARCH=YES' build
+        "CODE_SIGN_IDENTITY=$identity_hash" 'CODE_SIGN_STYLE=Manual' 'ONLY_ACTIVE_ARCH=YES' build
 fi
 
 app="$repository/.build/DerivedData/Build/Products/Release/PersonalSpace.app"
@@ -48,10 +73,15 @@ trap 'rm -rf -- "$staging"' EXIT
 
 /usr/bin/codesign --verify --deep --strict --verbose=2 "$app"
 /usr/bin/codesign --display --verbose=2 "$app" > "$staging/signature.txt" 2>&1
-if ! /usr/bin/grep -q '^Signature=adhoc$' "$staging/signature.txt"; then
-    echo "This packaging path expects a local ad hoc Release build. Rebuild without --skip-build." >&2
-    exit 4
+if [[ "$signing_identity" == "-" ]]; then
+    if ! /usr/bin/grep -q '^Signature=adhoc$' "$staging/signature.txt"; then
+        echo "Expected an ad hoc app. Rebuild without --skip-build or choose its certificate with --identity." >&2
+        exit 4
+    fi
+else
+    /usr/bin/codesign --verify --strict -R="certificate leaf = H\"$identity_hash\"" "$app"
 fi
+/usr/bin/codesign --display -r- "$app" > "$staging/designated-requirement.txt" 2>&1
 /usr/bin/codesign --display --entitlements :- "$app" > "$staging/entitlements.plist" 2> "$staging/entitlements-command.txt"
 sandbox=$(/usr/libexec/PlistBuddy -c 'Print :com.apple.security.app-sandbox' "$staging/entitlements.plist")
 if [[ "$sandbox" != true ]]; then
@@ -60,6 +90,10 @@ if [[ "$sandbox" != true ]]; then
 fi
 if [[ ! -f "$app/Contents/Resources/AppIcon.icns" ]]; then
     echo "Compiled AppIcon.icns is missing; integrate Assets.xcassets in the app resources and rebuild." >&2
+    exit 6
+fi
+if [[ ! -f "$app/Contents/Resources/THIRD_PARTY_NOTICES.md" ]]; then
+    echo "Third-party license notices are missing; rebuild with the resource included." >&2
     exit 6
 fi
 
@@ -74,13 +108,13 @@ fi
 
 metadata="$output/$name-metadata"
 mkdir "$metadata"
-cp "$staging/signature.txt" "$staging/entitlements.plist" "$output/signing-identities.txt" "$metadata/"
+cp "$staging/signature.txt" "$staging/designated-requirement.txt" "$staging/entitlements.plist" "$output/signing-identities.txt" "$metadata/"
 cp RELEASE_NOTES.md "$metadata/RELEASE_NOTES.md"
 cat > "$metadata/LOCAL-BUILD.txt" <<EOF
 PersonalSpace $version ($build)
 Built architecture: $architecture
 Packaged at UTC: $timestamp
-Signature: local ad hoc; App Sandbox verified
+Signature: $signature_description; App Sandbox verified
 
 This is a local development build. This script did not perform Developer ID
 signing, notarization, DMG creation, or clean-account installation validation.
