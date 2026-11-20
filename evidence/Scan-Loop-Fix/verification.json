@@ -1,0 +1,21 @@
+{
+  "date": "2026-11-07",
+  "version": "0.10.4 (17)",
+  "pre_fix_reproduction": "failed as expected: scanner indexed its own SQLite database",
+  "full_regression": {
+    "tests": 95,
+    "failures": 0
+  },
+  "additional_upgrade_test": {
+    "tests": 1,
+    "failures": 0
+  },
+  "debug_build": "passed",
+  "release_build": "passed",
+  "sandbox_and_adhoc_signature": "verified by package script",
+  "archive_integrity": "passed",
+  "gui": "Follow-up verified: updated installed app opened; original source and its file count visible; automatic updates paused",
+  "installed_application": "Updated in place to 0.10.4 (17), old process exited, signature verified, reopened through native GUI",
+  "whole_home_rescan": "not performed",
+  "rollback": "Previous application bundle retained locally; active library selection unchanged"
+}

@@ -1,0 +1,187 @@
+{
+  "version": "0.10.6",
+  "build": 21,
+  "tests": {
+    "executed": 100,
+    "failures": 0
+  },
+  "debug_build": "passed",
+  "release_build": "passed",
+  "scan_before": {
+    "context": "same FolderScanner + LibraryDatabase + on-disk SQLite, 50000 synthetic files, no UI reloads or production data",
+    "elapsed": "5.700165916 seconds",
+    "files": 50000,
+    "mode": "before",
+    "peak_rss_bytes": 112082944
+  },
+  "scan_after": {
+    "context": "same FolderScanner + LibraryDatabase + on-disk SQLite, 50000 synthetic files, no UI reloads or production data",
+    "elapsed": "5.464616416 seconds",
+    "files": 50000,
+    "mode": "after",
+    "peak_rss_bytes": 29130752
+  },
+  "query_after": {
+    "inbox-count": {
+      "median_ms": 0.154208,
+      "returned": 0,
+      "runs_ms": [
+        0.526083,
+        0.154208,
+        0.110708
+      ],
+      "total": 0
+    },
+    "sparse-name-search": {
+      "median_ms": 1112.592667,
+      "returned": 2,
+      "runs_ms": [
+        1119.23125,
+        1106.862333,
+        1112.592667
+      ],
+      "total": 2
+    },
+    "zero-result-search": {
+      "median_ms": 524.608083,
+      "returned": 0,
+      "runs_ms": [
+        524.608083,
+        530.213625,
+        524.468542
+      ],
+      "total": 0
+    }
+  },
+  "inbox_plan": [
+    [
+      6,
+      0,
+      204,
+      "SCAN i USING INDEX item_inbox_candidates"
+    ],
+    [
+      10,
+      0,
+      0,
+      "CORRELATED SCALAR SUBQUERY 1"
+    ],
+    [
+      14,
+      10,
+      55,
+      "SEARCH oi USING COVERING INDEX object_item_item (itemID=?)"
+    ],
+    [
+      24,
+      0,
+      0,
+      "CORRELATED SCALAR SUBQUERY 2"
+    ],
+    [
+      28,
+      24,
+      55,
+      "SEARCH mi USING COVERING INDEX matter_item_item (itemID=?)"
+    ],
+    [
+      37,
+      0,
+      46,
+      "SEARCH s USING INDEX sqlite_autoindex_source_1 (id=?)"
+    ]
+  ],
+  "organization_metadata_unchanged": true,
+  "gui_validation": {
+    "search_during_scan": "passed",
+    "settings_cmd_f_focus": "passed",
+    "sparse_search_matches": 2,
+    "search_verified_at_scanned_count": 107500,
+    "zero_result_feedback": "passed",
+    "full_scan": "passed_in_build21",
+    "incremental_update": "passed_in_build21",
+    "build20_full_scan": {
+      "ended_local": "2026-11-07 19:05 Asia/Shanghai",
+      "registered": 1788432,
+      "unreadable": 143,
+      "automatic_updates": true
+    },
+    "build20_incremental_search": {
+      "before": 0,
+      "after": 1,
+      "full_scan_timestamp_unchanged": true,
+      "manual_refresh": false
+    },
+    "build21_about": "0.10.6 (21)",
+    "build21_opened_same_library": true,
+    "build21_search_matches": 1,
+    "build21_startup_scan": "completed",
+    "build21_source_auto_update_enabled": true,
+    "build21_latest_observed_scanned_count": 301700,
+    "build21_full_scan": {
+      "ended_local": "2026-11-07 19:43 Asia/Shanghai",
+      "registered": 1787768,
+      "unreadable": 144,
+      "automatic_updates": true
+    },
+    "build21_incremental_search": {
+      "document": "GUI-0.10.6-21-update.md",
+      "before": 0,
+      "after": 1,
+      "initial_observed_bytes": 535,
+      "manual_refresh": false,
+      "full_scan_timestamp_unchanged": true,
+      "local_update_processed_count_observed": 1
+    },
+    "build21_idle_state_observed": true,
+    "build21_following_events": "Further local updates observed; full traversal end time retained"
+  },
+  "build20_active_library_pointer_unchanged": true,
+  "signing_identity": "AI Desktop Assistant",
+  "stable_signing": {
+    "identity": "AI Desktop Assistant",
+    "certificate_sha1": "BB32F84B154281E6B15E969921563BAEE94AA801",
+    "build21": {
+      "designated_requirement": "identifier \"com.liamamilin.PersonalSpace\" and certificate root = H\"bb32f84b154281e6b15e969921563baee94aa801\"",
+      "cdhash": "d84281faa64b5387d62142ea58df7de71b420dcf"
+    },
+    "isolated_build22": {
+      "designated_requirement": "identifier \"com.liamamilin.PersonalSpace\" and certificate root = H\"bb32f84b154281e6b15e969921563baee94aa801\"",
+      "cdhash": "b2c819ab63751f303cf133ca9cc062e755edb85f"
+    },
+    "update_identity_stable": true,
+    "explanation": "Two signed bundles have different content hashes and the same certificate-based identity. The comparison copy is not installed or launched; this does not assert all macOS permissions are persistent."
+  },
+  "build21_bundle_only_install": true,
+  "build21_tests": {
+    "executed": 100,
+    "failures": 0
+  },
+  "build20_memory": {
+    "pid": 83795,
+    "samples": 170,
+    "peak_sampled_rss_bytes": 259768320,
+    "last": {
+      "utc": "2026-11-07T11:08:12.001083+00:00",
+      "pid": 83795,
+      "rss_bytes": 259768320,
+      "process_elapsed": "14:16",
+      "cpu_percent": 101.8
+    }
+  },
+  "build20_physical_footprint_peak_M": 256.3,
+  "installed_application_signature_verified_with_keychain_access": true,
+  "permission_prompt_clarification": {
+    "user_screenshot_requesting_app": "ChatGPT.app",
+    "request": "access data from other apps",
+    "external_library_file_check": "cancelled; bundle-only installer used",
+    "subsequent_validation": "native UI and process metadata; no external access to app data directory",
+    "extra_chatgpt_data_access_required": false
+  },
+  "build21_memory": {
+    "physical_footprint_peak_reported": "262.6M",
+    "peak_sampled_rss_bytes": 288227328,
+    "rss_sample_count": 286,
+    "sample_context": "actual signed build21 process; scan and post-scan events; process metadata only; startup waiting period recorded separately"
+  }
+}

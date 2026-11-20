@@ -1,0 +1,42 @@
+{
+  "date": "2026-11-07",
+  "version": "0.10.5 (18)",
+  "full_regression": {
+    "tests": 99,
+    "failures": 0
+  },
+  "final_scope_recheck": {
+    "tests": 3,
+    "failures": 0
+  },
+  "debug_build": "passed",
+  "release_build": "passed",
+  "installed_executable": "matches verified Release",
+  "actual_user_source": {
+    "full_walk_ended_at": "2026-11-07 16:15 Asia/Shanghai",
+    "registered_readable_files": 1788020,
+    "unreadable_locations": 143,
+    "automatic_updates": "enabled",
+    "later_incremental_update_observed": 166,
+    "full_walk_timestamp_unchanged_after_updates": true,
+    "later_idle_state_verified": true
+  },
+  "gui_search": "not verified: automation timeout, returned to Sources and rechecked status",
+  "research": {
+    "source_projects": [
+      "oil-oil/oil-find",
+      "seedds/EverythingMac",
+      "syncthing/syncthing",
+      "cboxdoerfer/fsearch"
+    ],
+    "actual_process_sampling": "performed; database queue wait and repeated inbox counting observed",
+    "query_benchmark": "500000 synthetic rows, matching index eliminates full table scan",
+    "metadata_benchmark": "20000 synthetic files; did not reproduce actual memory peak",
+    "performance_changes_in_running_build": false
+  },
+  "remaining": [
+    "143 unreadable positions not covered",
+    "million-file scan performance and peak memory need further work",
+    "extra GUI search verification incomplete"
+  ]
+}

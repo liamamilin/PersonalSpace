@@ -1,0 +1,14 @@
+{
+  "identity": "AI Desktop Assistant",
+  "certificate_sha1": "BB32F84B154281E6B15E969921563BAEE94AA801",
+  "build21": {
+    "designated_requirement": "identifier \"com.liamamilin.PersonalSpace\" and certificate root = H\"bb32f84b154281e6b15e969921563baee94aa801\"",
+    "cdhash": "d84281faa64b5387d62142ea58df7de71b420dcf"
+  },
+  "isolated_build22": {
+    "designated_requirement": "identifier \"com.liamamilin.PersonalSpace\" and certificate root = H\"bb32f84b154281e6b15e969921563baee94aa801\"",
+    "cdhash": "b2c819ab63751f303cf133ca9cc062e755edb85f"
+  },
+  "update_identity_stable": true,
+  "explanation": "Two signed bundles have different content hashes and the same certificate-based identity. The comparison copy is not installed or launched; this does not assert all macOS permissions are persistent."
+}
