@@ -7,7 +7,7 @@
 //   -I .build/DerivedData/Build/Products/Debug \
 //   -I .build/SourcePackages/checkouts/GRDB.swift/Sources/GRDBSQLite \
 //   scripts/benchmark_scan.swift PersonalSpace/Data/Records.swift \
-//   PersonalSpace/Data/LibraryDatabase.swift PersonalSpace/Library/FolderScanner.swift \
+//   PersonalSpace/Data/LibraryDatabase.swift PersonalSpace/Data/LibraryDatabase+*.swift PersonalSpace/Library/FolderScanner.swift \
 //   PersonalSpace/Library/FolderAccess.swift PersonalSpace/ManagedFiles/ManagedFileStore.swift \
 //   PersonalSpace/Documents/DocumentTextExtractor.swift \
 //   .build/DerivedData/Build/Products/Debug/GRDB.o .build/benchmark/BulkDirectoryReader.o \
