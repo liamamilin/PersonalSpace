@@ -105,6 +105,7 @@ final class LibraryModel: ObservableObject {
     private var reloadTask: Task<Void, Never>?
     private var requestedReload = 0
     private var completedReload = 0
+    private var needsFullReload = true
     private var scanExclusions: FolderScanExclusions {
         FolderScanExclusions(databasePath: database?.queue.path,
             directories: librarySelection.map { [$0.base] } ?? [])
@@ -284,8 +285,9 @@ final class LibraryModel: ObservableObject {
         }
     }
 
-    func reload() async {
+    func reload(filesOnly: Bool = false) async {
         guard database != nil, !Task.isCancelled else { return }
+        if !filesOnly { needsFullReload = true }
         requestedReload += 1
         let revision = requestedReload
         // Callers wait for a read begun after their request. Concurrent callers
@@ -296,8 +298,10 @@ final class LibraryModel: ObservableObject {
             } else {
                 let target = requestedReload
                 let request = query
+                let full = needsFullReload || finishedQuery == nil
+                needsFullReload = false
                 let task = Task { [self] in
-                    await readLibrary(request)
+                    await readLibrary(request, full: full)
                     completedReload = target
                     reloadTask = nil
                 }
@@ -307,29 +311,37 @@ final class LibraryModel: ObservableObject {
         }
     }
 
-    private func readLibrary(_ request: FileQuery) async {
+    private func readLibrary(_ request: FileQuery, full: Bool) async {
         guard let database else { return }
         do {
-            let newSources = try await database.sources()
-            let newObjects = try await database.objects()
-            let newMatters = try await database.matters()
-            let newActions = try await database.actions()
+            let metadata: (sources: [FolderSource], objects: [PersonalObject], matters: [MatterRecord], actions: [ActionRecord])?
+            if full {
+                let newSources = try await database.sources()
+                let newObjects = try await database.objects()
+                let newMatters = try await database.matters()
+                let newActions = try await database.actions()
+                metadata = (newSources, newObjects, newMatters, newActions)
+            } else {
+                metadata = nil
+            }
             let result = try await database.files(request)
-            let pendingCount = try await database.files(FileQuery(inboxOnly: true, limit: 0)).total
+            let pendingCount = full ? try await database.files(FileQuery(inboxOnly: true, limit: 0)).total : nil
             guard request == query else { return }
-            sources = newSources
-            objects = newObjects
-            matters = newMatters
-            actions = newActions
+            if let metadata {
+                sources = metadata.sources
+                objects = metadata.objects
+                matters = metadata.matters
+                actions = metadata.actions
+            }
+            if let pendingCount { inboxCount = pendingCount }
             files = result.files
             total = result.total
-            inboxCount = pendingCount
             queryLoadError = nil
             finishedQuery = request
             if let id = selectedFileID, !files.contains(where: { $0.id == id }) {
                 selectedFileID = nil
             }
-            if selectedMatterID != nil { await loadMatterDetails() }
+            if full, selectedMatterID != nil { await loadMatterDetails() }
         } catch {
             guard request == query else { return }
             queryLoadError = "读取资料库失败，请重试。"
@@ -521,6 +533,7 @@ final class LibraryModel: ObservableObject {
             let alert = NSAlert()
             alert.messageText = "「\(url.lastPathComponent)」统计完成"
             alert.informativeText = "可读取范围内共有 \(report.fileCount.formatted()) 个文件。\n"
+                + (report.fileCount >= 100_000 ? "提示：文件数量较大，首次建库和启动补扫会耗时较长，建议改选存放资料的具体子文件夹。\n" : "")
                 + (report.issues.isEmpty ? "" : "\(report.issues.count.formatted()) 个位置未能完整读取，未读取的内容不计入总数。\n")
                 + "已跳过隐藏文件、目录包和符号链接；尚未建立索引。\n是否继续建立索引？文件夹之后有变化时，实际入库数量可能不同。"
             alert.addButton(withTitle: "建立索引")

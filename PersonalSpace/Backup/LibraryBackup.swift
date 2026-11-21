@@ -227,7 +227,7 @@ struct LibraryBackup: Sendable {
         return manifest
     }
 
-    private static func managedReferences(in snapshot: DatabaseQueue) throws -> [String: String] {
+    private static func managedReferences(in snapshot: any DatabaseReader) throws -> [String: String] {
         try snapshot.read { db in
             var result: [String: String] = [:]
             for row in try Row.fetchAll(db, sql: """

@@ -2,10 +2,16 @@ import Foundation
 import GRDB
 
 final class LibraryDatabase: Sendable {
-    let queue: DatabaseQueue
+    let queue: any DatabaseWriter
 
     init(path: String) throws {
-        queue = try DatabaseQueue(path: path)
+        if path == ":memory:" {
+            queue = try DatabaseQueue(path: path)
+        } else {
+            var configuration = Configuration()
+            configuration.maximumReaderCount = 4
+            queue = try DatabasePool(path: path, configuration: configuration)
+        }
         var migrator = DatabaseMigrator()
         migrator.registerMigration("M1-file-library") { db in
             try db.execute(sql: """

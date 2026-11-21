@@ -283,7 +283,7 @@ struct LibraryView: View {
         }
         .task(id: queryKey) {
             do { try await Task.sleep(for: .milliseconds(120)) } catch { return }
-            await model.reload()
+            await model.reload(filesOnly: model.isFileList && model.finishedQuery != nil)
         }
         .onChange(of: model.searchFocusRequest, initial: true) {
             if model.searchFocusRequest > 0 { searchFocused = true }
