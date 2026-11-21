@@ -276,7 +276,10 @@ struct LibraryView: View {
             model.openLibraryWindow = { openWindow(id: "library") }
             // Unit tests start their own isolated models. Do not also scan the
             // user's live sources from the XCTest host's restored window.
-            if NSClassFromString("XCTestCase") == nil { await model.start() }
+            if NSClassFromString("XCTestCase") == nil {
+                await model.start()
+                model.selectInitialOverviewIfPopulated()
+            }
         }
         .onChange(of: scenePhase) {
             if scenePhase == .active {
@@ -292,7 +295,10 @@ struct LibraryView: View {
             await model.reload(filesOnly: model.isFileList && model.finishedQuery != nil)
         }
         .onChange(of: model.searchFocusRequest, initial: true) {
-            if model.searchFocusRequest > 0 { searchFocused = true }
+            if model.searchFocusRequest > 0 {
+                if model.isOverview { model.selectedSourceID = "all" }
+                searchFocused = true
+            }
         }
         .onChange(of: model.inspectorToggleRequest) { toggleInspector() }
         .onChange(of: showInspector && !compactWindow && hasInspectorContent, initial: true) { _, wanted in
@@ -304,7 +310,10 @@ struct LibraryView: View {
         .onChange(of: model.selectedFileID) {
             if model.selectedFileID == nil { model.releasePreview(); showCompactInspector = false }
         }
-        .onChange(of: model.search) { model.limit = 500 }
+        .onChange(of: model.search) {
+            if model.isOverview && !model.search.isEmpty { model.selectedSourceID = "all" }
+            model.limit = 500
+        }
         .onChange(of: model.selectedSourceID) { model.limit = 500; showCompactInspector = false }
         .onChange(of: sortOrder) {
             guard let first = sortOrder.first else { return }

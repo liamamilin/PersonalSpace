@@ -143,6 +143,13 @@ final class LibraryModel: ObservableObject {
     }
     var isScanning: Bool { !scanning.isEmpty }
 
+    func selectInitialOverviewIfPopulated() {
+        guard selectedSourceID == "all", search.isEmpty else { return }
+        let hasContent = !sources.isEmpty || total > 0 || inboxCount > 0
+            || !objects.isEmpty || !matters.isEmpty || !actions.isEmpty
+        if hasContent { selectedSourceID = "overview" }
+    }
+
     init(database suppliedDatabase: LibraryDatabase? = nil) {
         var opened: LibraryDatabase?
         var location: LibraryLocation?

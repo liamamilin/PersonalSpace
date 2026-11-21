@@ -114,4 +114,21 @@ final class LibraryModelTests: XCTestCase {
         XCTAssertEqual(before, after)
     }
 
+    func testInitialOverviewSelectionFollowsLibraryPopulation() async throws {
+        let database = try LibraryDatabase(path: ":memory:")
+        let model = LibraryModel(database: database)
+        await model.reload()
+        model.selectInitialOverviewIfPopulated()
+        XCTAssertEqual(model.selectedSourceID, "all")
+
+        try await database.saveMatter(MatterDraft(id: "m1", title: "测试事务", actions: [ActionDraft(title: "待办")]))
+        await model.reload()
+        model.selectInitialOverviewIfPopulated()
+        XCTAssertEqual(model.selectedSourceID, "overview")
+
+        model.selectedSourceID = "matters"
+        model.selectInitialOverviewIfPopulated()
+        XCTAssertEqual(model.selectedSourceID, "matters")
+    }
+
 }
