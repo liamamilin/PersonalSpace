@@ -19,6 +19,7 @@ struct LibraryView: View {
     }
 
     private var hasInspectorContent: Bool {
+        if model.isOverview { return false }
         if model.isObjectsList { return !model.objects.isEmpty }
         if model.isMattersList || model.isActionsList { return !model.matters.isEmpty }
         return !model.files.isEmpty
@@ -31,7 +32,7 @@ struct LibraryView: View {
                     model.currentObjectID == nil ? model.selectedSourceID : "objects"
                 }, set: {
                     let destination = $0 ?? "all"
-                    if ["objects", "matters", "actions"].contains(destination) || !model.isFileList || model.currentObjectID != nil { model.search = "" }
+                    if ["overview", "objects", "matters", "actions"].contains(destination) || !model.isFileList || model.currentObjectID != nil { model.search = "" }
                     model.selectedFileID = nil
                     model.selectedSourceID = destination
                 })) {
@@ -40,6 +41,7 @@ struct LibraryView: View {
                             .frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle())
                     }.buttonStyle(.plain)
                     Section("资料库") {
+                        Label("概览", systemImage: "square.text.square").tag("overview")
                         HStack {
                             Label("待整理", systemImage: "tray.and.arrow.down")
                             Spacer()
@@ -173,7 +175,8 @@ struct LibraryView: View {
                     ObjectMattersView(objectID: object.id, compact: true).padding(.horizontal, 16).padding(.bottom, 12)
                     Divider()
                 }
-                if model.isObjectsList { ObjectsView() }
+                if model.isOverview { OverviewView() }
+                else if model.isObjectsList { ObjectsView() }
                 else if model.isMattersList { MattersView() }
                 else if model.isActionsList { ActionsView() }
                 else if model.isPhotosList { PhotosLibraryView() }
@@ -189,7 +192,7 @@ struct LibraryView: View {
                         ProgressView().controlSize(.mini)
                         Text("正在查询资料…")
                     } else {
-                        Text(model.isObjectsList ? "\(model.objects.count) 个个人对象" : model.isMattersList ? "共 \(model.matters.count) 个事务" : model.isActionsList ? "\(model.actions.count) 项行动" : (model.search.isEmpty ? "\(model.total) 份资料" : "\(model.total) 条搜索结果"))
+                        Text(model.isOverview ? "\(model.total) 份资料 · \(model.objects.count) 个对象 · \(model.matters.count) 个事务" : model.isObjectsList ? "\(model.objects.count) 个个人对象" : model.isMattersList ? "共 \(model.matters.count) 个事务" : model.isActionsList ? "\(model.actions.count) 项行动" : (model.search.isEmpty ? "\(model.total) 份资料" : "\(model.total) 条搜索结果"))
                         if model.isFileList && model.selectedFile != nil { Text("· 已选择 1 份") }
                     }
                     Spacer()
@@ -359,6 +362,7 @@ struct LibraryView: View {
     }
 
     private var navigationTitle: String {
+        if model.isOverview { return "概览" }
         if model.isObjectsList { return "个人对象" }
         if model.isMattersList { return "事务" }
         if model.isActionsList { return "待办" }

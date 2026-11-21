@@ -19,12 +19,13 @@ final class ImportedRemovalTests: XCTestCase {
 
     func testRemovalDeletesRecordCopyAndBodyIndexButPreservesOriginalAfterReopen() async throws {
         let f = try await fixture()
-        defer { try? FileManager.default.removeItem(at: f.root) }
+        defer { try? f.database.queue.close(); try? FileManager.default.removeItem(at: f.root) }
         let bytes = try Data(contentsOf: f.original)
         let date = try f.original.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate
         try await f.database.saveDocumentText(itemID: f.id, text: "unique-removal-body")
         try await f.store.removeImportedFile(itemID: f.id, database: f.database)
         let reopened = try LibraryDatabase(path: f.root.appendingPathComponent("Library.sqlite").path)
+        defer { try? reopened.queue.close() }
         for query in [FileQuery(), FileQuery(managedOnly: true), FileQuery(inboxOnly: true),
                       FileQuery(search: "unique-removal-body", searchBody: true)] {
             let result = try await reopened.files(query)
@@ -39,7 +40,7 @@ final class ImportedRemovalTests: XCTestCase {
 
     func testObjectMatterAndFactReferencesBlockRemovalUntilUnlinked() async throws {
         let f = try await fixture()
-        defer { try? FileManager.default.removeItem(at: f.root) }
+        defer { try? f.database.queue.close(); try? FileManager.default.removeItem(at: f.root) }
         try await f.database.saveObject(id: "computer", name: "合成电脑", kind: "device", notes: "")
         try await f.database.linkItems([f.id], to: "computer")
         do { try await f.store.removeImportedFile(itemID: f.id, database: f.database); XCTFail("Linked object must block") }
@@ -65,7 +66,7 @@ final class ImportedRemovalTests: XCTestCase {
 
     func testDatabaseFailureAndNonImportedRecordNeverDeleteCopy() async throws {
         let f = try await fixture()
-        defer { try? FileManager.default.removeItem(at: f.root) }
+        defer { try? f.database.queue.close(); try? FileManager.default.removeItem(at: f.root) }
         try await f.database.queue.write { db in
             try db.execute(sql: "CREATE TRIGGER reject_removal BEFORE DELETE ON item BEGIN SELECT RAISE(ABORT, 'synthetic refusal'); END")
         }
@@ -86,7 +87,7 @@ final class ImportedRemovalTests: XCTestCase {
 
     func testFileCleanupFailureIsExplicitAndNeverLeavesDanglingRecordOrDeletesSymlinkTarget() async throws {
         let f = try await fixture()
-        defer { try? FileManager.default.removeItem(at: f.root) }
+        defer { try? f.database.queue.close(); try? FileManager.default.removeItem(at: f.root) }
         let bytes = try Data(contentsOf: f.original)
         let retained = f.root.appendingPathComponent("retained-copy.txt")
         try FileManager.default.moveItem(at: f.copy, to: retained)

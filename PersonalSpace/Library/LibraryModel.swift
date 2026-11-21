@@ -114,12 +114,13 @@ final class LibraryModel: ObservableObject {
     var selectedFile: LibraryFile? { files.first { $0.id == selectedFileID } }
     var isQueryLoading: Bool { !storageUnavailable && finishedQuery != query }
     var selectedMatter: MatterRecord? { matters.first { $0.id == selectedMatterID } }
+    var isOverview: Bool { selectedSourceID == "overview" }
     var isMattersList: Bool { selectedSourceID == "matters" }
     var isActionsList: Bool { selectedSourceID == "actions" }
     var isPhotosList: Bool { selectedSourceID == PhotoLibraryController.sourceID }
     var isInbox: Bool { selectedSourceID == "inbox" }
     var isImporting: Bool { importingTotal > 0 || loadingDrop }
-    var isFileList: Bool { !isObjectsList && !isMattersList && !isActionsList }
+    var isFileList: Bool { !isOverview && !isObjectsList && !isMattersList && !isActionsList }
     var currentObjectID: String? {
         selectedSourceID.hasPrefix("object:") ? String(selectedSourceID.dropFirst(7)) : nil
     }
@@ -128,12 +129,13 @@ final class LibraryModel: ObservableObject {
         objects.first { $0.id == (currentObjectID ?? selectedObjectID) }
     }
     var query: FileQuery {
-        let isSource = !["all", "objects", "managed", "matters", "actions", "inbox"].contains(selectedSourceID) && currentObjectID == nil
-        return FileQuery(search: isObjectsList ? "" : search, sourceID: isSource ? selectedSourceID : nil,
+        let isSource = !["overview", "all", "objects", "managed", "matters", "actions", "inbox"].contains(selectedSourceID) && currentObjectID == nil
+        return FileQuery(search: (isOverview || isObjectsList) ? "" : search, sourceID: isSource ? selectedSourceID : nil,
             objectID: currentObjectID, managedOnly: selectedSourceID == "managed", inboxOnly: isInbox, searchBody: searchBody,
             sort: sort, ascending: ascending, limit: limit)
     }
     var hasInspectorSelection: Bool {
+        if isOverview { return false }
         if isObjectsList { return selectedObject != nil }
         if isActionsList { return selectedActionID != nil && selectedMatter != nil }
         if isMattersList { return selectedMatter != nil }
