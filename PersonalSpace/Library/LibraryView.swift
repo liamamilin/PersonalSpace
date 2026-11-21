@@ -87,6 +87,9 @@ struct LibraryView: View {
                     SettingsLink { Label("设置", systemImage: "gearshape") }
                         .buttonStyle(.plain)
                     Spacer()
+                    Button { openWindow(id: "guide") } label: {
+                        Label("使用指南", systemImage: "book")
+                    }.buttonStyle(.plain).foregroundStyle(.secondary)
                 }.padding(16)
             }
             .navigationSplitViewColumnWidth(min: 180, ideal: 210, max: 280)
@@ -390,15 +393,7 @@ struct LibraryView: View {
                 } else { Button("清除搜索") { model.search = "" } }
             }.frame(maxWidth: .infinity, maxHeight: .infinity)
         } else if model.sources.isEmpty && model.total == 0 && model.currentObjectID == nil && model.selectedSourceID != "managed" {
-            ContentUnavailableView {
-                Label("把散落的个人资料放到一个入口", systemImage: "folder.badge.plus")
-            } description: {
-                Text("收纳文件以保存可独立使用的副本，\n或添加文件夹，只读查找原位置的资料。")
-            } actions: {
-                Button("收纳文件…") { model.chooseImportFiles() }
-                    .buttonStyle(.borderedProminent).disabled(model.storageUnavailable || model.isImporting)
-                Button("添加文件夹…") { model.addFolders() }.disabled(model.storageUnavailable)
-            }.frame(maxWidth: .infinity, maxHeight: .infinity)
+            FirstRunWelcomeView()
         } else if model.files.isEmpty {
             ContentUnavailableView {
                 Label(model.search.isEmpty ? (model.isScanning ? "正在查找文件" : model.currentObjectID != nil ? "还没有关联资料" : model.selectedSourceID == "managed" ? "还没有托管副本" : "这个来源还没有文件") : "没有找到相关资料",

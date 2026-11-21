@@ -22,6 +22,9 @@ struct PersonalSpaceApp: App {
         Window("PersonalSpace 助手", id: "assistant") {
             AssistantView().environmentObject(assistant).environmentObject(model)
         }.defaultSize(width: 620, height: 740)
+        Window("PersonalSpace 使用指南", id: "guide") {
+            GuideView().environmentObject(model)
+        }.defaultSize(width: 760, height: 520)
         Settings {
             TabView(selection: $model.settingsSection) {
                 SourcesView().tabItem { Label("来源", systemImage: "folder") }.tag("sources")
@@ -73,6 +76,9 @@ struct LibraryCommands: Commands {
             Divider()
             Button("刷新来源") { model.refreshAll() }.keyboardShortcut("r")
                 .disabled((model.sources.isEmpty && !model.isPhotosList) || model.isScanning)
+        }
+        CommandGroup(replacing: .help) {
+            Button("PersonalSpace 使用指南") { openWindow(id: "guide") }
         }
     }
 }

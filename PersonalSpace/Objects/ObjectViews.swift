@@ -189,13 +189,42 @@ struct LinkToObjectSheet: View {
     @EnvironmentObject private var model: LibraryModel
     @Environment(\.dismiss) private var dismiss
     @State private var saving = false
+    @State private var newName = ""
+    @State private var newKind = "device"
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             Text("关联到个人对象").font(.title2.bold())
             Text(model.selectedFile?.name ?? "选择对象").foregroundStyle(.secondary)
             if model.objects.isEmpty {
-                Text("先在「个人对象」中创建一个对象，再关联资料。")
-                    .foregroundStyle(.secondary).frame(maxWidth: .infinity, minHeight: 100)
+                VStack(alignment: .leading, spacing: 12) {
+                    Text("还没有个人对象。可以直接创建一个新对象并关联这份资料：")
+                        .font(.callout).foregroundStyle(.secondary)
+                    Form {
+                        TextField("对象名称", text: $newName, prompt: Text("例如：我的电脑"))
+                        Picker("类别", selection: $newKind) {
+                            Text("设备").tag("device")
+                            Text("其它").tag("other")
+                        }
+                    }
+                    HStack {
+                        Spacer()
+                        Button(saving ? "正在创建…" : "创建并关联") {
+                            guard let fileID = model.selectedFile?.id else { return }
+                            let objectID = UUID().uuidString
+                            saving = true
+                            Task {
+                                if await model.saveObject(id: objectID, name: newName, kind: newKind, notes: ""),
+                                   await model.linkItems([fileID], to: objectID) {
+                                    dismiss()
+                                }
+                                saving = false
+                            }
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .disabled(saving || model.selectedFile == nil || newName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    }
+                }
+                .frame(maxWidth: .infinity, minHeight: 130, alignment: .topLeading)
             } else {
                 List(model.objects) { object in
                     HStack {
@@ -217,7 +246,7 @@ struct LinkToObjectSheet: View {
                 }
             }
             HStack { Spacer(); Button("完成") { dismiss() }.keyboardShortcut(.cancelAction) }
-        }.padding(24).frame(width: 460, height: 330)
+        }.padding(24).frame(width: 460, height: 340)
     }
 }
 

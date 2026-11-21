@@ -22,7 +22,7 @@ struct SourcesView: View {
             FolderCountingBanner()
             if model.sources.isEmpty {
                 ContentUnavailableView("尚未添加来源", systemImage: "folder",
-                    description: Text("选择你希望在资料库中查找的文件夹。"))
+                    description: Text("建议选择存放发票、合同等凭证的具体文件夹（而非整个用户目录）。添加前会先统计文件数，原文件保持只读。"))
             } else {
                 List(model.sources) { source in
                     VStack(alignment: .leading, spacing: 8) {
